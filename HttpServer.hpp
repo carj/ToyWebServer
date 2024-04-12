@@ -1,6 +1,6 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
-#include <sys/stat.h>
+
 
 #include <unistd.h>
 #include <iostream>
@@ -8,10 +8,11 @@
 #include <vector>
 #include <sstream>
 #include <map>
+#include <filesystem>
+#include <fstream>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/filesystem/fstream.hpp>
-#include <boost/filesystem/operations.hpp>
+
 
 
 class Request {
@@ -60,7 +61,7 @@ class Request {
 
 class HttpServer {
     public:
-        HttpServer(unsigned short port) :  server_port(port), backlog(32) {
+        HttpServer(unsigned short port, const char* www_root) :  m_server_port(port), m_backlog(32), m_www_root(www_root) {
             m_server_sock = socket(AF_INET, SOCK_STREAM, 0);
             if (m_server_sock > 0) {
                 int reuse = 1;
@@ -70,14 +71,14 @@ class HttpServer {
                 std::cout << "Socket Created: " << m_server_sock << "\n";
 
                 socketAddress.sin_family = AF_INET;
-                socketAddress.sin_port = htons(server_port);
+                socketAddress.sin_port = htons(m_server_port);
                 socketAddress.sin_addr.s_addr = inet_addr("0.0.0.0");
 
                 if (bind(m_server_sock, (struct sockaddr *)&socketAddress, sizeof(socketAddress)) == 0) {
-                    std::cout << "Socket Bound to Port: " << server_port << "\n";   
+                    std::cout << "Socket Bound to Port: " << m_server_port << "\n";   
 
-                    if (listen(m_server_sock, backlog) == 0) {
-                        std::cout << "Listening on Port: " << server_port << "\n";        
+                    if (listen(m_server_sock, m_backlog) == 0) {
+                        std::cout << "Listening on Port: " << m_server_port << "\n";        
                     }                
                 }
             }
@@ -92,9 +93,10 @@ class HttpServer {
             while (true) {
                 int client_socket = accept(m_server_sock, NULL, NULL);
                 if (client_socket > 0) {
-                    if (fork() == 0) {
-                        std::cout << "Child Created to Process Request\n";                   
+                    if (fork() == 0) {   
+                        // close the parent process server socket          
                         close(m_server_sock);
+
                         char buffer[BUFSIZ];
                         ssize_t bytes = read(client_socket, buffer, BUFSIZ);
                         buffer[bytes] = 0;
@@ -105,48 +107,59 @@ class HttpServer {
                         if (request.verb() == "GET") {
                             GET(request, client_socket);
                         }   
-
+                        // close the client socket from the child
                         close(client_socket);     
                     }
+                    // close the client socket from the parent
                     close(client_socket);
                 }
-
             }
-
         }
 
 
     private:
 
+        /**
+         *  Process any GET request
+         *  send the files rqeuested back to the client
+         * 
+        */
         void GET(Request& request, int client_socket) {
-            std::cout << "GET Verb" << "\n";  
+            std::cout << "GET Verb: " << request.path() <<  "\n";  
 
+            // remove the leading "/" 
             auto path = request.path();
             path.erase(0, 1);
 
-            boost::filesystem::ifstream file;
-            boost::filesystem::path content;
+            std::filesystem::path root{m_www_root};
+            std::filesystem::path content;
 
             if (path.empty()) {
-                const boost::filesystem::path p("./index.html");   
-                content = p;     
+                content = root / std::filesystem::path("index.html");  
             } else {
-                const boost::filesystem::path p(path);   
-                content = p;      
+                content = root / path;
             }
 
-            struct stat stat_struct;
-            stat(content.c_str(), &stat_struct);
+            // Check file can be read and exists
+            if (access(content.c_str(), R_OK) != 0) { 
+                std::string response("HTTP/1.1 404 Not Found");
+                write(client_socket, response.c_str(), response.size());   
+                return; 
+            }
 
-            std::size_t sz = stat_struct.st_size;
-            file.open(content, std::ios_base::binary);
-            char buffer[sz];
-            file.read(buffer, sz);
+            // copy file into byte buffer
+            std::size_t size = std::filesystem::file_size(content);
+            char buffer[size];
+            std::fstream ifs{content, std::ios::in|std::ios::binary};
+            ifs.seekg(0);
+            ifs.read(buffer, size);
+            ifs.close();
+
             std::ostringstream ss;
-            ss << "HTTP/1.1 200 OK\nContent-Type: text/html\nContent-Length: " << sz << "\n\n";
+            ss << "HTTP/1.1 200 OK\nContent-Type: text/html\nContent-Length: " << size << "\n\n";
             std::string response(ss.str());
             write(client_socket, response.c_str(), response.size());
-            write(client_socket, buffer, sz);
+            write(client_socket, buffer, size);
         }
 
         void HEAD(Request& request, int client_socket) {}
@@ -155,20 +168,21 @@ class HttpServer {
 
         Request process_request(std::string& req) {
 
-            auto result = std::vector<std::string>{};
+            auto request_lines = std::vector<std::string>{};
             auto ss = std::stringstream{req};
 
             for (std::string line; std::getline(ss, line, '\n');)
-                result.push_back(line);
+                request_lines.push_back(line);
 
-            std::string verb_line = result[0];
-            result.erase(result.begin());
-            Request request(verb_line, result);   
+            std::string verb_line = request_lines[0];
+            request_lines.erase(request_lines.begin());
+            Request request(verb_line, request_lines);   
             return request;
         }
 
         int m_server_sock;
-        int backlog{32};
-        unsigned short server_port{8080};
+        unsigned short m_server_port;
+        int m_backlog;
+        std::string m_www_root;
         struct sockaddr_in socketAddress;
 };
