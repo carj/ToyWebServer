@@ -1,8 +1,10 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
-
+#include <sys/sendfile.h>
 
 #include <unistd.h>
+#include <fcntl.h>
+
 #include <iostream>
 #include <string>
 #include <vector>
@@ -10,11 +12,16 @@
 #include <map>
 #include <filesystem>
 #include <fstream>
-
-#include <boost/algorithm/string.hpp>
-
+#include <algorithm> 
 
 
+/**
+ *  The client Request 
+ * 
+ *  The HTTP verb and path 
+ *  The HTTP request headers are stored in the map.
+ * 
+*/
 class Request {
 
     public:
@@ -22,35 +29,51 @@ class Request {
 
             auto verbs = std::vector<std::string>{};
             auto ss = std::stringstream{verb_line};
-            for (std::string s; std::getline(ss, s, ' '); ) 
-                verbs.push_back(s);
+            for (std::string s; std::getline(ss, s, ' '); ) {
+                verbs.push_back(trim(s));
+            }
             
-            m_verb = boost::algorithm::trim_copy(verbs[0]);
-            m_path = boost::algorithm::trim_copy(verbs[1]);
-            m_version = boost::algorithm::trim_copy(verbs[2]);
+            m_verb = verbs[0];
+            m_path = verbs[1];
+            m_version = verbs[2];
 
-
-            for (auto &l: header_lines) {
-                std::vector<std::string> result;
-                std::string ll = boost::algorithm::trim_copy(l);
-                if (ll.size() > 0) {
-                    boost::split(result, l, boost::is_any_of(":"));
-                    if ( (result[0].size() > 0) && (result[1].size() > 0) ) {
-                        std::string key = boost::algorithm::trim_copy(result[0]);
-                        std::string value = boost::algorithm::trim_copy(result[1]);
-                        if ( (key.size() > 0) && (value.size() > 0) ) 
-                            m_headers.emplace(key, value);
-                    }
-                }
+            for (std::string &line: header_lines) {
+                line = trim(line);
+                if (!line.empty()) {
+                    auto npos = line.find(":", 0); 
+                    auto key = line.substr(0, npos);
+                    auto value = line.substr(npos+1, line.length());
+                    m_headers.emplace(trim(key), trim(value));
+                }       
             }
         }
 
         std::string verb() { return m_verb;}
         std::string path() { return m_path;}
         std::string version() { return m_version;}
+        std::map<std::string, std::string> headers() { return m_headers;}
 
 
     private:
+
+        // trim from start (in place)
+        inline void ltrim(std::string &s) {
+            s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) { return !std::isspace(ch); }));
+        }
+
+        // trim from end (in place)
+        inline void rtrim(std::string &s) {
+            s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
+                return !std::isspace(ch);
+            }).base(), s.end());
+        }
+
+        inline std::string trim(std::string &s) {
+            rtrim(s);
+            ltrim(s);
+            return s;
+        }
+
         std::string m_verb;
         std::string m_path;
         std::string m_version;
@@ -70,6 +93,8 @@ class HttpServer {
 
                 std::cout << "Socket Created: " << m_server_sock << "\n";
 
+                struct sockaddr_in socketAddress;
+
                 socketAddress.sin_family = AF_INET;
                 socketAddress.sin_port = htons(m_server_port);
                 socketAddress.sin_addr.s_addr = inet_addr("0.0.0.0");
@@ -88,6 +113,12 @@ class HttpServer {
             std::cout << "Socket Closed: " << m_server_sock << "\n";
         }   
 
+
+        /**
+         *  Wait for client requests
+         *  fork() a child process for each request
+         * 
+        */
         void Accept() {
 
             while (true) {
@@ -101,14 +132,19 @@ class HttpServer {
                         ssize_t bytes = read(client_socket, buffer, BUFSIZ);
                         buffer[bytes] = 0;
                         std::string rcv(buffer);
-                        Request request =  process_request(rcv); 
-                        std::cout << request.verb() << "\n";
 
+                        // parse the client request
+                        Request request =  process_request(rcv); 
+
+                        // process the GET requests
                         if (request.verb() == "GET") {
                             GET(request, client_socket);
                         }   
+                        
                         // close the client socket from the child
                         close(client_socket);     
+
+                        _exit(0);
                     }
                     // close the client socket from the parent
                     close(client_socket);
@@ -119,6 +155,9 @@ class HttpServer {
 
     private:
 
+        std::string_view OK{"HTTP/1.1 200 OK"};
+        std::string_view NF{"HTTP/1.1 404 Not Found"};
+
         /**
          *  Process any GET request
          *  send the files rqeuested back to the client
@@ -127,50 +166,42 @@ class HttpServer {
         void GET(Request& request, int client_socket) {
             std::cout << "GET Verb: " << request.path() <<  "\n";  
 
-            // remove the leading "/" 
-            auto path = request.path();
-            path.erase(0, 1);
-
             std::filesystem::path root{m_www_root};
-            std::filesystem::path content;
+            std::filesystem::path req_path{request.path()};
 
-            if (path.empty()) {
-                content = root / std::filesystem::path("index.html");  
-            } else {
-                content = root / path;
+            std::filesystem::path full_path = root;
+            full_path += req_path;
+
+            if (std::filesystem::is_directory(full_path)) {
+              full_path += std::filesystem::path("/index.html");  
             }
-
+                   
             // Check file can be read and exists
-            if (access(content.c_str(), R_OK) != 0) { 
-                std::string response("HTTP/1.1 404 Not Found");
-                write(client_socket, response.c_str(), response.size());   
+            if (access(full_path.c_str(), R_OK) != 0) { 
+                write(client_socket, NF.data(), NF.size());   
                 return; 
             }
 
-            // copy file into byte buffer
-            std::size_t size = std::filesystem::file_size(content);
-            char buffer[size];
-            std::fstream ifs{content, std::ios::in|std::ios::binary};
-            ifs.seekg(0);
-            ifs.read(buffer, size);
-            ifs.close();
-
+            std::size_t size = std::filesystem::file_size(full_path);
+            
             std::ostringstream ss;
-            ss << "HTTP/1.1 200 OK\nContent-Type: text/html\nContent-Length: " << size << "\n\n";
+            ss << OK << "\n" << "Content-Type: text/html" << "\n" << "Content-Length: " << size << "\n\n";
             std::string response(ss.str());
             write(client_socket, response.c_str(), response.size());
-            write(client_socket, buffer, size);
+
+            int in_fd = open(full_path.c_str(), O_RDONLY);
+            sendfile(client_socket, in_fd, NULL, size);
+            
         }
 
-        void HEAD(Request& request, int client_socket) {}
-        void PUT(Request& request, int client_socket) {}
-        void POST(Request& request, int client_socket) {}
-
+        /**
+        *  Parse the request from the client 
+        *  including the request headers
+        */
         Request process_request(std::string& req) {
 
             auto request_lines = std::vector<std::string>{};
             auto ss = std::stringstream{req};
-
             for (std::string line; std::getline(ss, line, '\n');)
                 request_lines.push_back(line);
 
@@ -184,5 +215,5 @@ class HttpServer {
         unsigned short m_server_port;
         int m_backlog;
         std::string m_www_root;
-        struct sockaddr_in socketAddress;
+        
 };
