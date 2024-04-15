@@ -4,7 +4,7 @@
 
 #include <unistd.h>
 #include <fcntl.h>
-
+#include <errno.h>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm> 
+#include <stdexcept>
 
 #include <boost/log/trivial.hpp>
 
@@ -48,6 +49,11 @@ class Response {
         static constexpr std::string_view NO_CONTENT = "HTTP/1.1 204 No Content";
         static constexpr std::string_view BAD_REQUEST = "HTTP/1.1 400 Bad Request";
 
+         /**
+         *  Return the response headers as a single string
+         *  
+         *  use the content size
+        */
         std::string headers_str(std::size_t content_size) {
             m_headers["Content-Length"] = std::to_string(content_size);  
             std::ostringstream ss;
@@ -59,6 +65,12 @@ class Response {
             return response;
         }
 
+
+        /**
+         *  Return the response headers as a single string
+         *  
+         *  use the content size and mime type
+        */
         std::string headers_str(std::size_t content_size, std::filesystem::path filename) {
 
             m_headers["Content-Length"] = std::to_string(content_size);  
@@ -75,6 +87,11 @@ class Response {
 
     private:
 
+
+        /**
+         *  return the mime type based on the filename
+         * 
+        */
         std::string content_type(std::filesystem::path filename) {
 
             if (m_mime.find(filename.extension()) == m_mime.end()) 
@@ -83,6 +100,11 @@ class Response {
                 return m_mime[filename.extension()];
         }
 
+        /**
+         *  define some simple mime types 
+         *  based on file extensions
+         * 
+        */
         void populate_mime_types() {
 
             m_mime.emplace(".html", "text/html");
@@ -129,12 +151,20 @@ class Response {
 class Request {
 
     public:
-        Request(std::string& request_line, std::vector<std::string>& header_lines)  {
+        Request(std::string& request_line)  {
 
+            auto header_lines = std::vector<std::string>{};
+            auto sstream  = std::stringstream{request_line};
+            for (std::string line; std::getline(sstream, line, '\n');)
+                header_lines.push_back(line);
+
+            std::string request_first_line = header_lines[0];
+            header_lines.erase(header_lines.begin());
+            
             auto request_parts = std::vector<std::string>{};
-            auto ss = std::stringstream{request_line};
-            for (std::string s; std::getline(ss, s, ' '); ) {
-                request_parts.push_back(trim(s));
+            auto sstream_method = std::stringstream{request_first_line};
+            for (std::string line; std::getline(sstream_method, line, ' '); ) {
+                request_parts.push_back(trim(line));
             }
             
             m_method = request_parts[0];
@@ -185,6 +215,12 @@ class Request {
 
 };
 
+/**
+ *  The Webserver
+ * 
+ *  Call Accept() to start the server
+ * 
+*/
 class HttpServer {
     public:
         HttpServer(unsigned short port, const char* www_root) :  m_server_port(port), m_backlog(32), m_www_root(www_root) {
@@ -207,9 +243,12 @@ class HttpServer {
 
                     if (listen(m_server_sock, m_backlog) == 0) {
                         BOOST_LOG_TRIVIAL(info) << "Listening on Port: " << m_server_port;        
-                    }                
+                    }         
+                }  else {
+                    BOOST_LOG_TRIVIAL(error) << strerror(errno);   
+                    throw std::runtime_error("Cannot Bind to Port");  
                 }
-            }
+            } 
         }
         ~HttpServer() {
             close(m_server_sock);
@@ -224,7 +263,10 @@ class HttpServer {
         void Accept() {
 
             while (true) {
-                int client_socket = accept(m_server_sock, NULL, NULL);
+                struct sockaddr_in clientAddress;
+                socklen_t socklen = sizeof(clientAddress);
+                int client_socket = accept(m_server_sock, (struct sockaddr *)&clientAddress, &socklen);
+                BOOST_LOG_TRIVIAL(debug) << "Client Connection From: " << inet_ntoa(clientAddress.sin_addr);
                 if (client_socket > 0) {
                     if (fork() == 0) {   
                         // close the parent process server socket          
@@ -236,7 +278,11 @@ class HttpServer {
                         std::string rcv(buffer);
 
                         // parse the client request
-                        Request request =  process_request(rcv); 
+                        Request request{rcv}; 
+
+                        BOOST_LOG_TRIVIAL(info) << "Method: " << request.method();
+                        BOOST_LOG_TRIVIAL(info) << "Path: " << request.path();
+                        BOOST_LOG_TRIVIAL(info) << "Version: " << request.version();
 
                         // process the GET requests
                         if (request.method() == "GET") {
@@ -261,6 +307,12 @@ class HttpServer {
 
     private:
 
+        /**
+         *  process HEAD requests
+         * 
+         *  Send response headers but no content
+         * 
+        */
         void HEAD(Request& request, int client_socket) {
 
             std::filesystem::path root{m_www_root};
@@ -313,7 +365,6 @@ class HttpServer {
 
             Response response{};
 
-                   
             // Check file can be read and exists
             if (access(full_path.c_str(), R_OK) != 0) { 
                 std::ostringstream ss;
@@ -335,26 +386,13 @@ class HttpServer {
             // send content
             off_t off = 0;
             int in_fd = open(full_path.c_str(), O_RDONLY);
-            ssize_t sentbytes = sendfile(client_socket, in_fd, &off, size);
+            std::size_t sentbytes = static_cast<std::size_t>(sendfile(client_socket, in_fd, &off, size));
             close(in_fd);
-          
-        }
 
-        /**
-        *  Parse the request from the client 
-        *  including the request headers
-        */
-        Request process_request(std::string& req) {
-
-            auto request_lines = std::vector<std::string>{};
-            auto ss = std::stringstream{req};
-            for (std::string line; std::getline(ss, line, '\n');)
-                request_lines.push_back(line);
-
-            std::string request_line = request_lines[0];
-            request_lines.erase(request_lines.begin());
-            Request request(request_line, request_lines);   
-            return request;
+            if (sentbytes != size) {
+                BOOST_LOG_TRIVIAL(error) << "Error sending file contents";            
+            }
+  
         }
 
         int m_server_sock;
