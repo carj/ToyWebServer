@@ -14,28 +14,132 @@
 #include <fstream>
 #include <algorithm> 
 
+#include <boost/log/trivial.hpp>
+
+
+typedef std::map<std::string, std::string> Headers;
+typedef std::map<std::string, std::string> MimeTypes;
+
+/**
+ *  The client Response
+ *  Create the headers to send back to the client
+ * 
+*/
+class Response {
+
+    public:
+
+        Response() : m_headers(), m_mime()  {
+
+            std::time_t result = std::time(nullptr);
+            std::string str = std::asctime(std::localtime(&result));
+            str.pop_back();
+            
+            m_headers.emplace("Date", str);
+            m_headers.emplace("Content-Length", "0"); 
+            m_headers.emplace("Server", "C++ Test Server");
+
+            populate_mime_types();
+        }
+
+        static constexpr std::string_view OK = "HTTP/1.1 200 OK";
+        static constexpr std::string_view NOT_FOUND = "HTTP/1.1 404 Not Found";
+        static constexpr std::string_view CREATED = "HTTP/1.1 201 Created";
+        static constexpr std::string_view NO_CONTENT = "HTTP/1.1 204 No Content";
+        static constexpr std::string_view BAD_REQUEST = "HTTP/1.1 400 Bad Request";
+
+        std::string headers_str(std::size_t content_size) {
+            m_headers["Content-Length"] = std::to_string(content_size);  
+            std::ostringstream ss;
+            for (auto const& header : m_headers){
+                ss << header.first << ": " << header.second << "\n";   
+            }
+            ss << "\n";
+            std::string response(ss.str());
+            return response;
+        }
+
+        std::string headers_str(std::size_t content_size, std::filesystem::path filename) {
+
+            m_headers["Content-Length"] = std::to_string(content_size);  
+            m_headers["Content-Type"]  = content_type(filename);  
+            std::ostringstream ss;
+            for (auto const& header : m_headers){
+                ss << header.first << ": " << header.second << "\n";   
+            }
+            ss << "\n";
+            std::string response(ss.str());
+            return response;
+        }
+
+
+    private:
+
+        std::string content_type(std::filesystem::path filename) {
+
+            if (m_mime.find(filename.extension()) == m_mime.end()) 
+                return "application/octet-stream";
+            else
+                return m_mime[filename.extension()];
+        }
+
+        void populate_mime_types() {
+
+            m_mime.emplace(".html", "text/html");
+            m_mime.emplace(".htm", "text/html");
+            m_mime.emplace(".ico", "image/x-icon");
+            m_mime.emplace(".png", "image/png"); 
+            m_mime.emplace(".aac", "audio/aac"); 
+            m_mime.emplace(".apng", "image/apng"); 
+            m_mime.emplace(".avi", "video/x-msvideo"); 
+            m_mime.emplace(".bin", "application/octet-stream");
+            m_mime.emplace(".css", "text/css"); 
+            m_mime.emplace(".jpeg", "image/jpeg");
+            m_mime.emplace(".jpg", "image/jpeg");
+            m_mime.emplace(".js", "text/javascript");
+            m_mime.emplace(".json", "application/json");
+            m_mime.emplace(".mjs", "text/javascript");
+            m_mime.emplace(".mp3", "audio/mpeg");
+            m_mime.emplace(".mp4", "video/mp4");
+            m_mime.emplace(".mpeg", "video/mpeg");
+            m_mime.emplace(".svg", "image/svg+xml");
+            m_mime.emplace(".tif", "image/tiff");
+            m_mime.emplace(".tiff", "image/tiff");
+            m_mime.emplace(".txt", "text/plain");
+            m_mime.emplace(".wav", "audio/wav");
+            m_mime.emplace(".weba", "audio/webm");
+            m_mime.emplace(".webm", "video/webm");
+            m_mime.emplace(".xhtml", "application/xhtml+xml");
+            m_mime.emplace(".webp", "image/webp");
+            m_mime.emplace(".xml", "application/xml");
+        }
+
+        Headers m_headers;
+        MimeTypes m_mime;
+
+};
 
 /**
  *  The client Request 
  * 
- *  The HTTP verb and path 
+ *  The HTTP method and path 
  *  The HTTP request headers are stored in the map.
  * 
 */
 class Request {
 
     public:
-        Request(std::string& verb_line, std::vector<std::string>& header_lines)  {
+        Request(std::string& request_line, std::vector<std::string>& header_lines)  {
 
-            auto verbs = std::vector<std::string>{};
-            auto ss = std::stringstream{verb_line};
+            auto request_parts = std::vector<std::string>{};
+            auto ss = std::stringstream{request_line};
             for (std::string s; std::getline(ss, s, ' '); ) {
-                verbs.push_back(trim(s));
+                request_parts.push_back(trim(s));
             }
             
-            m_verb = verbs[0];
-            m_path = verbs[1];
-            m_version = verbs[2];
+            m_method = request_parts[0];
+            m_path = request_parts[1];
+            m_version = request_parts[2];
 
             for (std::string &line: header_lines) {
                 line = trim(line);
@@ -48,7 +152,7 @@ class Request {
             }
         }
 
-        std::string verb() { return m_verb;}
+        std::string method() { return m_method;}
         std::string path() { return m_path;}
         std::string version() { return m_version;}
         std::map<std::string, std::string> headers() { return m_headers;}
@@ -74,10 +178,9 @@ class Request {
             return s;
         }
 
-        std::string m_verb;
+        std::string m_method;
         std::string m_path;
         std::string m_version;
-
         std::map<std::string, std::string> m_headers;
 
 };
@@ -91,7 +194,7 @@ class HttpServer {
                 setsockopt(m_server_sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&reuse, sizeof(reuse));
                 setsockopt(m_server_sock, SOL_SOCKET, SO_REUSEPORT, (const char*)&reuse, sizeof(reuse));
 
-                std::cout << "Socket Created: " << m_server_sock << "\n";
+                BOOST_LOG_TRIVIAL(debug) << "Socket Created: " << std::to_string(m_server_sock);
 
                 struct sockaddr_in socketAddress;
 
@@ -100,19 +203,18 @@ class HttpServer {
                 socketAddress.sin_addr.s_addr = inet_addr("0.0.0.0");
 
                 if (bind(m_server_sock, (struct sockaddr *)&socketAddress, sizeof(socketAddress)) == 0) {
-                    std::cout << "Socket Bound to Port: " << m_server_port << "\n";   
+                    BOOST_LOG_TRIVIAL(debug) << "Socket Bound to Port: " << m_server_port;
 
                     if (listen(m_server_sock, m_backlog) == 0) {
-                        std::cout << "Listening on Port: " << m_server_port << "\n";        
+                        BOOST_LOG_TRIVIAL(info) << "Listening on Port: " << m_server_port;        
                     }                
                 }
             }
         }
         ~HttpServer() {
             close(m_server_sock);
-            std::cout << "Socket Closed: " << m_server_sock << "\n";
+            BOOST_LOG_TRIVIAL(debug) << "Socket Closed: " << std::to_string(m_server_sock);
         }   
-
 
         /**
          *  Wait for client requests
@@ -137,13 +239,17 @@ class HttpServer {
                         Request request =  process_request(rcv); 
 
                         // process the GET requests
-                        if (request.verb() == "GET") {
+                        if (request.method() == "GET") {
                             GET(request, client_socket);
-                        }   
+                        }  
+                        if (request.method() == "HEAD") {
+                            HEAD(request, client_socket);
+                        }    
                         
                         // close the client socket from the child
                         close(client_socket);     
 
+                        // exit the child process
                         _exit(0);
                     }
                     // close the client socket from the parent
@@ -155,16 +261,7 @@ class HttpServer {
 
     private:
 
-        std::string_view OK{"HTTP/1.1 200 OK"};
-        std::string_view NF{"HTTP/1.1 404 Not Found"};
-
-        /**
-         *  Process any GET request
-         *  send the files rqeuested back to the client
-         * 
-        */
-        void GET(Request& request, int client_socket) {
-            std::cout << "GET Verb: " << request.path() <<  "\n";  
+        void HEAD(Request& request, int client_socket) {
 
             std::filesystem::path root{m_www_root};
             std::filesystem::path req_path{request.path()};
@@ -175,23 +272,72 @@ class HttpServer {
             if (std::filesystem::is_directory(full_path)) {
               full_path += std::filesystem::path("/index.html");  
             }
+
+            Response response{};
                    
             // Check file can be read and exists
             if (access(full_path.c_str(), R_OK) != 0) { 
-                write(client_socket, NF.data(), NF.size());   
+                std::ostringstream ss;
+                ss << Response::NOT_FOUND << "\n";
+                ss << response.headers_str(0);
+                std::string response_buff(ss.str());
+                write(client_socket, response_buff.c_str(), response_buff.size());
+                return; 
+            }
+
+            std::size_t size = std::filesystem::file_size(full_path);
+            std::ostringstream ss;
+            ss << Response::OK << "\n";
+            ss << response.headers_str(size, full_path.filename());
+            std::string response_buff(ss.str());
+            write(client_socket, response_buff.c_str(), response_buff.size());
+
+        }
+
+        /**
+         *  Process any GET request
+         *  send the files rqeuested back to the client
+         * 
+        */
+        void GET(Request& request, int client_socket) {
+
+            std::filesystem::path root{m_www_root};
+            std::filesystem::path req_path{request.path()};
+
+            std::filesystem::path full_path = root;
+            full_path += req_path;
+
+            if (std::filesystem::is_directory(full_path)) {
+              full_path += std::filesystem::path("/index.html");  
+            }
+
+            Response response{};
+
+                   
+            // Check file can be read and exists
+            if (access(full_path.c_str(), R_OK) != 0) { 
+                std::ostringstream ss;
+                ss << Response::NOT_FOUND << "\n";
+                ss << response.headers_str(0);
+                std::string response_buff(ss.str());
+                write(client_socket, response_buff.c_str(), response_buff.size());
                 return; 
             }
 
             std::size_t size = std::filesystem::file_size(full_path);
             
             std::ostringstream ss;
-            ss << OK << "\n" << "Content-Type: text/html" << "\n" << "Content-Length: " << size << "\n\n";
-            std::string response(ss.str());
-            write(client_socket, response.c_str(), response.size());
+            ss << Response::OK << "\n";
+            ss << response.headers_str(size, full_path.filename());
+            std::string response_buff(ss.str());
+            write(client_socket, response_buff.c_str(), response_buff.size());
 
+            // send content
+            off_t off = 0;
             int in_fd = open(full_path.c_str(), O_RDONLY);
-            sendfile(client_socket, in_fd, NULL, size);
-            
+            ssize_t sentbytes = sendfile(client_socket, in_fd, &off, size);
+            close(in_fd);
+          
         }
 
         /**
@@ -205,9 +351,9 @@ class HttpServer {
             for (std::string line; std::getline(ss, line, '\n');)
                 request_lines.push_back(line);
 
-            std::string verb_line = request_lines[0];
+            std::string request_line = request_lines[0];
             request_lines.erase(request_lines.begin());
-            Request request(verb_line, request_lines);   
+            Request request(request_line, request_lines);   
             return request;
         }
 
