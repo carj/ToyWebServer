@@ -4,6 +4,7 @@
 
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <errno.h>
 #include <iostream>
 #include <string>
@@ -26,13 +27,13 @@ typedef std::map<std::string, std::string> MimeTypes;
  *  Create the headers to send back to the client
  * 
 */
-class Response {
+struct Response {
 
     public:
 
         Response() : m_headers(), m_mime()  {
 
-            std::time_t result = std::time(nullptr);
+            const std::time_t result = std::time(nullptr);
             std::string str = std::asctime(std::localtime(&result));
             str.pop_back();
             
@@ -40,7 +41,7 @@ class Response {
             m_headers.emplace("Content-Length", "0"); 
             m_headers.emplace("Server", "C++ Test Server");
 
-            populate_mime_types();
+            mime_types();
         }
 
         static constexpr std::string_view OK = "HTTP/1.1 200 OK";
@@ -54,7 +55,7 @@ class Response {
          *  
          *  use the content size
         */
-        std::string headers_str(std::size_t content_size) {
+        std::string headers_str(const std::size_t content_size) {
             m_headers["Content-Length"] = std::to_string(content_size);  
             std::ostringstream ss;
             for (auto const& header : m_headers){
@@ -71,10 +72,19 @@ class Response {
          *  
          *  use the content size and mime type
         */
-        std::string headers_str(std::size_t content_size, std::filesystem::path filename) {
+        std::string headers_str(const std::size_t content_size, const std::filesystem::path& path) {
 
             m_headers["Content-Length"] = std::to_string(content_size);  
-            m_headers["Content-Type"]  = content_type(filename);  
+            m_headers["Content-Type"]  = content_type(path.filename());  
+
+            struct stat file_details;
+
+            if (stat(path.c_str(), &file_details) == 0) {
+                std::string last_mod = std::ctime(&file_details.st_mtim.tv_sec);
+                last_mod.pop_back();
+                m_headers["Last-Modified"] = last_mod;
+            }
+
             std::ostringstream ss;
             for (auto const& header : m_headers){
                 ss << header.first << ": " << header.second << "\n";   
@@ -92,7 +102,7 @@ class Response {
          *  return the mime type based on the filename
          * 
         */
-        std::string content_type(std::filesystem::path filename) {
+        std::string content_type(const std::filesystem::path& filename) {
 
             if (m_mime.find(filename.extension()) == m_mime.end()) 
                 return "application/octet-stream";
@@ -105,7 +115,7 @@ class Response {
          *  based on file extensions
          * 
         */
-        void populate_mime_types() {
+        void mime_types() {
 
             m_mime.emplace(".html", "text/html");
             m_mime.emplace(".htm", "text/html");
@@ -127,6 +137,7 @@ class Response {
             m_mime.emplace(".svg", "image/svg+xml");
             m_mime.emplace(".tif", "image/tiff");
             m_mime.emplace(".tiff", "image/tiff");
+            m_mime.emplace(".ttf", "font/ttf");
             m_mime.emplace(".txt", "text/plain");
             m_mime.emplace(".wav", "audio/wav");
             m_mime.emplace(".weba", "audio/webm");
@@ -148,17 +159,17 @@ class Response {
  *  The HTTP request headers are stored in the map.
  * 
 */
-class Request {
+struct Request {
 
     public:
-        Request(std::string& request_line)  {
+        Request(const std::string& request_line) : m_method(), m_path(), m_version("HTTP/1.1"), m_headers() {
 
             auto header_lines = std::vector<std::string>{};
             auto sstream  = std::stringstream{request_line};
             for (std::string line; std::getline(sstream, line, '\n');)
                 header_lines.push_back(line);
 
-            std::string request_first_line = header_lines[0];
+            const std::string request_first_line = header_lines[0];
             header_lines.erase(header_lines.begin());
             
             auto request_parts = std::vector<std::string>{};
@@ -182,10 +193,10 @@ class Request {
             }
         }
 
-        std::string method() { return m_method;}
-        std::string path() { return m_path;}
-        std::string version() { return m_version;}
-        std::map<std::string, std::string> headers() { return m_headers;}
+        std::string method() const { return m_method;}
+        std::string path() const { return m_path;}
+        std::string version() const { return m_version;}
+        Headers headers() { return m_headers;}
 
 
     private:
@@ -375,11 +386,11 @@ class HttpServer {
                 return; 
             }
 
-            std::size_t size = std::filesystem::file_size(full_path);
+            const std::size_t size = std::filesystem::file_size(full_path);
             
             std::ostringstream ss;
             ss << Response::OK << "\n";
-            ss << response.headers_str(size, full_path.filename());
+            ss << response.headers_str(size, full_path);
             std::string response_buff(ss.str());
             write(client_socket, response_buff.c_str(), response_buff.size());
 

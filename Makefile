@@ -1,5 +1,5 @@
 CPPFLAGS=-DBOOST_LOG_DYN_LINK -g -Wall -Wextra
-LDFLAGS=-g
+LDFLAGS=
 LDLIBS=-lboost_log
 
 server: server.o
