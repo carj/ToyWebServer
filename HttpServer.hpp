@@ -17,8 +17,11 @@
 #include <stdexcept>
 
 #include <boost/log/trivial.hpp>
+#include <boost/url.hpp>
+#include <boost/algorithm/string.hpp>
 
 typedef std::map<std::string, std::string> Headers;
+typedef std::map<std::string, std::string> QueryParams;
 typedef std::map<std::string, std::string> MimeTypes;
 
 /**
@@ -32,7 +35,6 @@ class Response
 public:
     Response() : m_headers(), m_mime()
     {
-
         const std::time_t result = std::time(nullptr);
         std::string str{std::ctime(&result)};
         str.pop_back();
@@ -64,10 +66,9 @@ public:
         last_mod.pop_back();
         m_headers["Last-Modified"] = last_mod;
 
-        std::ostringstream ss;
-        ss << details->st_ino << "-" << details->st_size << "-" << details->st_mtim.tv_sec;
-        std::string etag(ss.str());
-        m_headers["Etag"] = etag;
+        std::ostringstream oss;
+        oss << details->st_ino << "-" << details->st_size << "-" << details->st_mtim.tv_sec;
+        m_headers["Etag"] = oss.str();
 
         m_headers["Content-Length"] = std::to_string(details->st_size);
         m_headers["Content-Type"] = content_type(path.filename());
@@ -81,9 +82,8 @@ public:
     {
         std::ostringstream ss;
         for (auto const &header : m_headers)
-        {
             ss << header.first << ": " << header.second << "\n";
-        }
+
         ss << "\n";
         std::string response(ss.str());
         return response;
@@ -95,7 +95,6 @@ public:
      */
     inline std::string getHeader(const char *key)
     {
-
         if (m_headers.find(key) == m_headers.end())
             return "";
         else
@@ -109,8 +108,8 @@ private:
      */
     inline std::string content_type(const std::filesystem::path &filename)
     {
-
-        if (m_mime.find(filename.extension()) == m_mime.end())
+        std::string extension = filename.extension();
+        if (m_mime.find(extension) == m_mime.end())
             return "application/octet-stream";
         else
             return m_mime[filename.extension()];
@@ -123,7 +122,6 @@ private:
      */
     void mime_types()
     {
-
         m_mime.emplace(".html", "text/html");
         m_mime.emplace(".htm", "text/html");
         m_mime.emplace(".ico", "image/x-icon");
@@ -169,13 +167,14 @@ class Request
 {
 
 public:
-    Request(const std::string &request_line) : m_method(), m_path(), m_version("HTTP/1.1"), m_headers()
+    Request(const std::string &request_line) : m_method(), m_path(), m_version("HTTP/1.1"), m_headers(), m_params()
     {
+        using namespace boost;
 
         auto header_lines = std::vector<std::string>{};
         auto sstream = std::stringstream{request_line};
         for (std::string line; std::getline(sstream, line, '\n');)
-            header_lines.push_back(line);
+            header_lines.push_back(algorithm::trim_copy(line));
 
         const std::string request_first_line = header_lines[0];
         header_lines.erase(header_lines.begin());
@@ -183,25 +182,31 @@ public:
         auto request_parts = std::vector<std::string>{};
         auto sstream_method = std::stringstream{request_first_line};
         for (std::string line; std::getline(sstream_method, line, ' ');)
-        {
-            request_parts.push_back(trim(line));
-        }
+            request_parts.push_back(algorithm::trim_copy(line));
 
         m_method = request_parts[0];
-        m_path = request_parts[1];
         m_version = request_parts[2];
 
         for (std::string &line : header_lines)
         {
-            line = trim(line);
+            line = algorithm::trim_copy(line);
             if (!line.empty())
             {
                 auto npos = line.find(":", 0);
                 auto key = line.substr(0, npos);
                 auto value = line.substr(npos + 1, line.length());
-                m_headers.emplace(trim(key), trim(value));
+                m_headers.emplace(algorithm::trim_copy(key), algorithm::trim_copy(value));
             }
         }
+
+        std::string url = "http://" + m_headers["Host"] + request_parts[1];
+        BOOST_LOG_TRIVIAL(debug) << url;
+
+        urls::url_view u = urls::parse_uri(url).value();
+        m_path = u.path();
+
+        for (auto param : u.params())
+            m_params.emplace(algorithm::trim_copy(param.key), algorithm::trim_copy(param.value));
     }
 
     /**
@@ -210,7 +215,6 @@ public:
      */
     std::string getHeader(const char *key)
     {
-
         if (m_headers.find(key) == m_headers.end())
             return "";
         else
@@ -220,35 +224,15 @@ public:
     std::string method() const { return m_method; }
     std::string path() const { return m_path; }
     std::string version() const { return m_version; }
+    QueryParams params() { return m_params; }
+    Headers headers() { return m_headers; }
 
 private:
-    // trim from start (in place)
-    inline void ltrim(std::string &s)
-    {
-        s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch)
-                                        { return !std::isspace(ch); }));
-    }
-
-    // trim from end (in place)
-    inline void rtrim(std::string &s)
-    {
-        s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch)
-                             { return !std::isspace(ch); })
-                    .base(),
-                s.end());
-    }
-
-    inline std::string trim(std::string &s)
-    {
-        rtrim(s);
-        ltrim(s);
-        return s;
-    }
-
     std::string m_method;
     std::string m_path;
     std::string m_version;
-    std::map<std::string, std::string> m_headers;
+    Headers m_headers;
+    QueryParams m_params;
 };
 
 /**
@@ -306,7 +290,6 @@ public:
      */
     void Accept()
     {
-
         while (true)
         {
             struct sockaddr_in clientAddress;
@@ -344,24 +327,12 @@ public:
 
                     if (request.method() == "PUT")
                     {
-                        std::ostringstream ss;
-                        ss << Response::NOT_ALLOWED << "\n";
-                        ss << "Allow: GET, HEAD"
-                           << "\n";
-                        ss << "\n";
-                        std::string response_buff(ss.str());
-                        write(client_socket, response_buff.c_str(), response_buff.size());
+                        not_allowed(client_socket);
                     }
 
                     if (request.method() == "POST")
                     {
-                        std::ostringstream ss;
-                        ss << Response::NOT_ALLOWED << "\n";
-                        ss << "Allow: GET, HEAD"
-                           << "\n";
-                        ss << "\n";
-                        std::string response_buff(ss.str());
-                        write(client_socket, response_buff.c_str(), response_buff.size());
+                        not_allowed(client_socket);
                     }
 
                     // close the client socket from the child
@@ -377,6 +348,19 @@ public:
     }
 
 private:
+    void not_allowed(int client_socket)
+    {
+        Response response{};
+
+        std::ostringstream ss;
+        ss << Response::NOT_ALLOWED << "\n";
+        ss << "Allow: GET, HEAD"
+           << "\n";
+        ss << response.headers_str();
+        std::string response_buff(ss.str());
+        write(client_socket, response_buff.c_str(), response_buff.size());
+    }
+
     /**
      *  process HEAD requests
      *
@@ -385,7 +369,6 @@ private:
      */
     void HEAD(Request &request, int client_socket)
     {
-
         std::filesystem::path root{m_www_root};
         std::filesystem::path req_path{request.path()};
 
@@ -393,9 +376,7 @@ private:
         full_path += req_path;
 
         if (std::filesystem::is_directory(full_path))
-        {
             full_path += std::filesystem::path("/index.html");
-        }
 
         Response response{};
 
@@ -437,9 +418,7 @@ private:
         full_path += req_path;
 
         if (std::filesystem::is_directory(full_path))
-        {
             full_path += std::filesystem::path("/index.html");
-        }
 
         Response response{};
 
@@ -482,9 +461,7 @@ private:
                 close(in_fd);
 
                 if (sentbytes != file_details.st_size)
-                {
                     BOOST_LOG_TRIVIAL(error) << "Error sending file contents";
-                }
             }
         }
     }
