@@ -54,6 +54,15 @@ public:
     static constexpr std::string_view NOT_MODIFIED = "HTTP/1.1 304 Not Modified";
     static constexpr std::string_view BAD_REQUEST = "HTTP/1.1 400 Bad Request";
     static constexpr std::string_view NOT_ALLOWED = "HTTP/1.1 405 Method Not Allowed";
+    static constexpr std::string_view EXISTS = "HTTP/1.1 409 Conflict";
+    static constexpr std::string_view SERVER_ERROR = "HTTP/1.1 500 Internal Server Error";
+
+    inline void setContentLength(int length) {
+        m_headers["Content-Length"] = std::to_string(length);    
+    }
+    inline void setContentType(std::string extension) {
+        m_headers["Content-Type"] = m_mime[extension];
+    }
 
     /**
      *  Add HTTP Response headers which need file information
@@ -87,6 +96,10 @@ public:
         ss << "\n";
         std::string response(ss.str());
         return response;
+    }
+
+    inline void addHeader(std::string key, std::string value) {
+        m_headers[key] = value;
     }
 
     /**
@@ -195,7 +208,8 @@ public:
                 auto npos = line.find(":", 0);
                 auto key = line.substr(0, npos);
                 auto value = line.substr(npos + 1, line.length());
-                m_headers.emplace(algorithm::trim_copy(key), algorithm::trim_copy(value));
+                key = boost::algorithm::to_lower_copy(algorithm::trim_copy(key));
+                m_headers.emplace(key, algorithm::trim_copy(value));
             }
         }
 
@@ -277,6 +291,7 @@ public:
             }
         }
     }
+
     ~HttpServer()
     {
         close(m_server_sock);
@@ -327,12 +342,12 @@ public:
 
                     if (request.method() == "PUT")
                     {
-                        not_allowed(client_socket);
+                        PUT(request, client_socket);
                     }
 
                     if (request.method() == "POST")
                     {
-                        not_allowed(client_socket);
+                        POST(request, client_socket);
                     }
 
                     // close the client socket from the child
@@ -347,18 +362,14 @@ public:
         }
     }
 
-private:
-    void not_allowed(int client_socket)
-    {
-        Response response{};
+protected:
 
-        std::ostringstream ss;
-        ss << Response::NOT_ALLOWED << "\n";
-        ss << "Allow: GET, HEAD"
-           << "\n";
-        ss << response.headers_str();
-        std::string response_buff(ss.str());
-        write(client_socket, response_buff.c_str(), response_buff.size());
+    virtual void PUT(Request &request, int client_socket) {
+        not_allowed(client_socket);
+    }
+
+    virtual void POST(Request &request, int client_socket) {
+        not_allowed(client_socket);
     }
 
     /**
@@ -367,7 +378,7 @@ private:
      *  Send response headers but no content
      *
      */
-    void HEAD(Request &request, int client_socket)
+    virtual void HEAD(Request &request, int client_socket)
     {
         std::filesystem::path root{m_www_root};
         std::filesystem::path req_path{request.path()};
@@ -408,7 +419,7 @@ private:
      *  send the files rqeuested back to the client
      *
      */
-    void GET(Request &request, int client_socket)
+    virtual void GET(Request &request, int client_socket)
     {
 
         std::filesystem::path root{m_www_root};
@@ -464,6 +475,22 @@ private:
                     BOOST_LOG_TRIVIAL(error) << "Error sending file contents";
             }
         }
+    }
+
+    std::string getRootPath() { return std::filesystem::path(m_www_root); }
+
+private:
+    void not_allowed(int client_socket)
+    {
+        Response response{};
+
+        std::ostringstream ss;
+        ss << Response::NOT_ALLOWED << "\n";
+        ss << "Allow: GET, HEAD"
+           << "\n";
+        ss << response.headers_str();
+        std::string response_buff(ss.str());
+        write(client_socket, response_buff.c_str(), response_buff.size());
     }
 
     int m_server_sock;
