@@ -11,6 +11,7 @@
 #include <vector>
 #include <sstream>
 #include <map>
+#include <list>
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
@@ -57,10 +58,12 @@ public:
     static constexpr std::string_view EXISTS = "HTTP/1.1 409 Conflict";
     static constexpr std::string_view SERVER_ERROR = "HTTP/1.1 500 Internal Server Error";
 
-    inline void setContentLength(int length) {
-        m_headers["Content-Length"] = std::to_string(length);    
+    inline void setContentLength(int length)
+    {
+        m_headers["Content-Length"] = std::to_string(length);
     }
-    inline void setContentType(std::string extension) {
+    inline void setContentType(std::string extension)
+    {
         m_headers["Content-Type"] = m_mime[extension];
     }
 
@@ -98,7 +101,8 @@ public:
         return response;
     }
 
-    inline void addHeader(std::string key, std::string value) {
+    inline void addHeader(std::string key, std::string value)
+    {
         m_headers[key] = value;
     }
 
@@ -213,11 +217,14 @@ public:
             }
         }
 
-        std::string url = "http://" + m_headers["Host"] + request_parts[1];
-        BOOST_LOG_TRIVIAL(debug) << url;
+        // std::string url = "http://" + m_headers["host"] + request_parts[1];
+        BOOST_LOG_TRIVIAL(debug) << request_parts[1];
 
-        urls::url_view u = urls::parse_uri(url).value();
+        urls::url_view u = urls::parse_origin_form(request_parts[1]).value();
         m_path = u.path();
+
+        for (auto seg : u.encoded_segments())
+            m_segments.push_back(seg.decode());
 
         for (auto param : u.params())
             m_params.emplace(algorithm::trim_copy(param.key), algorithm::trim_copy(param.value));
@@ -240,6 +247,7 @@ public:
     std::string version() const { return m_version; }
     QueryParams params() { return m_params; }
     Headers headers() { return m_headers; }
+    std::list<std::string> segments() { return m_segments; }
 
 private:
     std::string m_method;
@@ -247,6 +255,7 @@ private:
     std::string m_version;
     Headers m_headers;
     QueryParams m_params;
+    std::list<std::string> m_segments;
 };
 
 /**
@@ -349,6 +358,10 @@ public:
                     {
                         POST(request, client_socket);
                     }
+                    if (request.method() == "DELETE")
+                    {
+                        DELETE(request, client_socket);
+                    }
 
                     // close the client socket from the child
                     close(client_socket);
@@ -363,12 +376,18 @@ public:
     }
 
 protected:
-
-    virtual void PUT(Request &request, int client_socket) {
+    virtual void DELETE(Request &request, int client_socket)
+    {
         not_allowed(client_socket);
     }
 
-    virtual void POST(Request &request, int client_socket) {
+    virtual void PUT(Request &request, int client_socket)
+    {
+        not_allowed(client_socket);
+    }
+
+    virtual void POST(Request &request, int client_socket)
+    {
         not_allowed(client_socket);
     }
 
