@@ -23,7 +23,6 @@ public:
     }
 
 protected:
-
     virtual void DELETE(Request &request, int client_socket)
     {
         std::list<std::string> components = request.segments();
@@ -32,9 +31,7 @@ protected:
             for (auto s : request.segments())
             {
                 if (p == s)
-                {
                     components.remove(p);
-                }
             }
         }
 
@@ -52,15 +49,20 @@ protected:
             for (auto s : request.segments())
             {
                 if (p == s)
-                {
                     components.remove(p);
-                }
             }
         }
 
         if (components.size() == 1)
         {
-            HEAD_BUCKET(request, client_socket, components.front());
+            std::string bucket = components.front();
+            HEAD_BUCKET(request, client_socket, bucket);
+        }
+        else
+        {
+            std::string bucket = components.front();
+            components.pop_front();
+            HEAD_OBJECT(request, client_socket, bucket, components);
         }
     }
 
@@ -85,23 +87,23 @@ protected:
 
     virtual void PUT(Request &request, int client_socket)
     {
-       std::list<std::string> components = request.segments();
+        std::list<std::string> components = request.segments();
         for (auto p : m_path_parts)
         {
             for (auto s : request.segments())
             {
                 if (p == s)
-                {
                     components.remove(p);
-                }
             }
         }
-
-        BOOST_LOG_TRIVIAL(debug) << "DELETE-2";
 
         if (components.size() == 1)
         {
             PUT_BUCKET(request, client_socket, components.front());
+        }
+        else
+        {
+            PUT_OBJECT()
         }
     }
 
@@ -148,19 +150,16 @@ private:
         write(client_socket, response_buff.data(), response_buff.size());
     }
 
-    void PUT_BUCKET(Request &request, int client_socket, std::string& bucket)
+    void PUT_BUCKET(Request &request, int client_socket, std::string &bucket)
     {
-
         std::filesystem::path path = getRootPath() / std::filesystem::path{bucket};
         Response response{};
 
+        std::ostringstream ss;
+
         if (std::filesystem::exists(path))
         {
-            std::ostringstream ss;
             ss << Response::EXISTS << "\n";
-            ss << response.headers_str();
-            std::string response_buff(ss.str());
-            write(client_socket, response_buff.c_str(), response_buff.size());
         }
         else
         {
@@ -168,52 +167,72 @@ private:
             {
                 bucket.insert(0, 1, '/');
                 response.addHeader("Location", bucket);
-                std::ostringstream ss;
                 ss << Response::OK << "\n";
-                ss << response.headers_str();
-                std::string response_buff(ss.str());
-                write(client_socket, response_buff.c_str(), response_buff.size());
             }
             else
             {
                 std::ostringstream ss;
                 ss << Response::SERVER_ERROR << "\n";
-                ss << response.headers_str();
-                std::string response_buff(ss.str());
-                write(client_socket, response_buff.c_str(), response_buff.size());
             }
         }
+
+        ss << response.headers_str();
+        std::string response_buff(ss.str());
+        write(client_socket, response_buff.c_str(), response_buff.size());
     }
 
-    void DELETE_BUCKET(Request &request, int client_socket, std::string &bucket) 
+    void DELETE_BUCKET(Request &request, int client_socket, std::string &bucket)
     {
         std::filesystem::path path = getRootPath() / std::filesystem::path{bucket};
         Response response{};
 
-        BOOST_LOG_TRIVIAL(debug) << "DELETE_BUCKET" << path;
+        std::ostringstream ss;
 
         if (std::filesystem::exists(path))
         {
-             
-
-            if (std::filesystem::remove(path)) {
-                std::ostringstream ss;
+            if (std::filesystem::remove(path))
+            {
                 ss << Response::NO_CONTENT << "\n";
-                ss << response.headers_str();
-                std::string response_buff(ss.str());
-                write(client_socket, response_buff.c_str(), response_buff.size());
+            }
+            else
+            {
+                ss << Response::SERVER_ERROR << "\n";
             }
         }
         else
         {
-            std::ostringstream ss;
             ss << Response::NOT_FOUND << "\n";
-            ss << response.headers_str();
-            std::string response_buff(ss.str());
-            write(client_socket, response_buff.c_str(), response_buff.size());
         }
 
+        ss << response.headers_str();
+        std::string response_buff(ss.str());
+        write(client_socket, response_buff.c_str(), response_buff.size());
+    }
 
+    void HEAD_OBJECT(Request &request, int client_socket, std::string &bucket, std::list<std::string> &keys)
+    {
+        Response response{};
+
+        std::filesystem::path path = getRootPath() / std::filesystem::path{bucket};
+        for (auto p : keys)
+            path = path / p;
+
+        std::ostringstream ss;
+
+        struct stat path_struct;
+        if (stat(path.c_str(), &path_struct) == 0)
+        {
+            ss << Response::OK << "\n";
+            response.addFileHeaders(&path_struct, path);
+        }
+        else
+        {
+            ss << Response::SERVER_ERROR << "\n";
+        }
+
+        ss << response.headers_str();
+        std::string response_buff(ss.str());
+        write(client_socket, response_buff.c_str(), response_buff.size());
     }
 
     void HEAD_BUCKET(Request &request, int client_socket, std::string &bucket)
@@ -222,26 +241,16 @@ private:
 
         Response response{};
 
-        if (std::filesystem::exists(path))
-        {
-            std::ostringstream ss;
-            ss << Response::OK << "\n";
-            ss << response.headers_str();
-            std::string response_buff(ss.str());
-            write(client_socket, response_buff.c_str(), response_buff.size());
-        }
-        else
-        {
-            std::ostringstream ss;
-            ss << Response::NOT_FOUND << "\n";
-            ss << response.headers_str();
-            std::string response_buff(ss.str());
-            write(client_socket, response_buff.c_str(), response_buff.size());
-        }
-    }
+        std::ostringstream ss;
 
-    void HEAD_KEY(Request &request, int client_socket)
-    {
+        if (std::filesystem::exists(path))
+            ss << Response::OK << "\n";
+        else
+            ss << Response::NOT_FOUND << "\n";
+
+        ss << response.headers_str();
+        std::string response_buff(ss.str());
+        write(client_socket, response_buff.c_str(), response_buff.size());
     }
 
     std::string m_path;

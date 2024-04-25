@@ -358,6 +358,7 @@ public:
                     {
                         POST(request, client_socket);
                     }
+
                     if (request.method() == "DELETE")
                     {
                         DELETE(request, client_socket);
