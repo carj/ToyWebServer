@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <stdexcept>
 
+
 #include <boost/log/trivial.hpp>
 #include <boost/url.hpp>
 #include <boost/algorithm/string.hpp>
@@ -42,15 +43,17 @@ public:
 
         // Some Default Headers
         m_headers.emplace("Date", str);
-        m_headers.emplace("Content-Length", "0");
+        // m_headers.emplace("Content-Length", "0");
         m_headers.emplace("Server", "C++ Test Server");
+        m_headers.emplace("Connection", "keep-alive");
 
         mime_types();
     }
 
     static constexpr std::string_view OK = "HTTP/1.1 200 OK";
-    static constexpr std::string_view NOT_FOUND = "HTTP/1.1 404 Not Found";
+    static constexpr std::string_view CONTINUE = "HTTP/1.1 100 Continue";
     static constexpr std::string_view CREATED = "HTTP/1.1 201 Created";
+    static constexpr std::string_view NOT_FOUND = "HTTP/1.1 404 Not Found";
     static constexpr std::string_view NO_CONTENT = "HTTP/1.1 204 No Content";
     static constexpr std::string_view NOT_MODIFIED = "HTTP/1.1 304 Not Modified";
     static constexpr std::string_view BAD_REQUEST = "HTTP/1.1 400 Bad Request";
@@ -216,8 +219,6 @@ public:
                 m_headers.emplace(key, algorithm::trim_copy(value));
             }
         }
-
-        // std::string url = "http://" + m_headers["host"] + request_parts[1];
         BOOST_LOG_TRIVIAL(debug) << request_parts[1];
 
         urls::url_view u = urls::parse_origin_form(request_parts[1]).value();
@@ -307,6 +308,78 @@ public:
         BOOST_LOG_TRIVIAL(debug) << "Socket Closed: " << std::to_string(m_server_sock);
     }
 
+    ssize_t readn(int fd, unsigned char *buff, size_t length)
+    {
+
+        size_t nleft;
+        ssize_t nread;
+        unsigned char *ptr;
+
+        ptr = buff;
+        nleft = length;
+        while (nleft > 0)
+        {
+            if ((nread = recv(fd, ptr, nleft, MSG_DONTWAIT)) < 0)
+            {
+                if (errno == EINTR)
+                {
+                    nread = 0;
+                }
+                else
+                {
+                    return (-1);
+                }
+            }
+            else if (nread == 0)
+            {
+                break;
+            }
+
+            nleft -= nread;
+            ptr += nread;
+        }
+        return (length - nleft);
+    }
+
+    std::string read_request(int client_socket)
+    {
+        std::vector<unsigned char> buffer;
+
+        read_socket(client_socket, buffer);
+
+        BOOST_LOG_TRIVIAL(debug) << "READ Socket: " << buffer.size() << " Bytes Found";
+
+        std::cout << std::endl;
+
+        std::string head_sep{"\r\n\r\n"};
+
+        auto iter = std::search(buffer.begin(), buffer.end(), head_sep.begin(), head_sep.end());
+
+        std::string str(buffer.begin(), iter);
+
+        return str;
+    }
+
+    void read_socket(int client_socket, std::vector<unsigned char> &buffer)
+    {
+        int SOCK_BUFF_LEN = 1;
+        unsigned char buff[SOCK_BUFF_LEN];
+        ssize_t bytes = readn(client_socket, buff, SOCK_BUFF_LEN);
+        if (bytes > 0)
+        {
+            buffer.insert(buffer.end(), buff, buff + bytes);
+        }
+
+        while (bytes == SOCK_BUFF_LEN)
+        {
+            bytes = readn(client_socket, buff, SOCK_BUFF_LEN);
+            if (bytes > 0)
+            {
+                buffer.insert(buffer.end(), buff, buff + bytes);
+            }
+        }
+    }
+
     /**
      *  Wait for client requests
      *  fork() a child process for each request
@@ -327,10 +400,20 @@ public:
                     // close the parent process server socket
                     close(m_server_sock);
 
+                    std::string rcv = read_request(client_socket);
+
+                    /**
                     char buffer[BUFSIZ];
                     ssize_t bytes = read(client_socket, buffer, BUFSIZ);
                     buffer[bytes] = 0;
+
+                    char *ps = strstr(buffer, "\r\n\r\n");
+                    printf("%s\n", ps);
+                    printf("Length %ld\n", strlen(ps));
+
                     std::string rcv(buffer);
+
+                    */
 
                     // parse the client request
                     Request request{rcv};
@@ -384,7 +467,63 @@ protected:
 
     virtual void PUT(Request &request, int client_socket)
     {
-        not_allowed(client_socket);
+        Response response{};
+        std::ostringstream ss_cont;
+
+        ss_cont << Response::CONTINUE << "\r\n\r\n";
+        std::string response_cont(ss_cont.str());
+        write(client_socket, response_cont.c_str(), response_cont.size());
+        fsync(client_socket);
+        BOOST_LOG_TRIVIAL(info) << response_cont;
+
+        unsigned long length = atol(request.getHeader("content-length").c_str());
+
+        unsigned char B[1024];
+
+        recv(client_socket, B, 128, MSG_PEEK);
+
+        BOOST_LOG_TRIVIAL(info) << "HEADER Length: " << length;
+
+        std::vector<unsigned char> buffer;
+
+        ssize_t nread = -1;
+        do
+        {
+            nread = recv(client_socket, B, 1024, MSG_DONTWAIT);
+            if (nread > 0)
+                buffer.insert(buffer.end(), B, B + nread);
+        } while (nread > 0);
+
+        std::string key = "key.png";
+
+        BOOST_LOG_TRIVIAL(info) << response_cont;
+
+        BOOST_LOG_TRIVIAL(info) << "BUFF Size: " << buffer.size();
+
+        std::ofstream myfile;
+        myfile.open(key);
+        for (unsigned char c : buffer)
+        {
+            myfile << c;
+        }
+        myfile.close();
+
+        std::ostringstream ss_ok;
+
+        if (std::filesystem::file_size(key) == length)
+        {
+            ss_ok << Response::CREATED << "\n";
+        }
+        else
+        {
+            ss_ok << Response::BAD_REQUEST << "\n";
+        }
+
+        ss_ok << response.headers_str();
+        std::string response_ok(ss_ok.str());
+        write(client_socket, response_ok.c_str(), response_ok.size());
+        fsync(client_socket);
+        BOOST_LOG_TRIVIAL(info) << response_ok;
     }
 
     virtual void POST(Request &request, int client_socket)
@@ -497,7 +636,7 @@ protected:
         }
     }
 
-    std::string getRootPath() { return std::filesystem::path(m_www_root); }
+    std::filesystem::path getRootPath() { return std::filesystem::path(m_www_root); }
 
 private:
     void not_allowed(int client_socket)
