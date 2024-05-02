@@ -11,28 +11,52 @@
 
 struct PathDetails
 {
-    PathDetails() : bucket(""), key(""), hash("") {}
+    PathDetails(std::list<std::string> path_parts, std::filesystem::path object_root) : bucket(""), key(""), hash("")
+    {
+        if (path_parts.size() == 0)
+        {
+            type = PathDetails::TYPE::LIST_BUCKET;
+        }
+        if (path_parts.size() == 1)
+        {
+            this->bucket = path_parts.front();
+            this->bucket_path = object_root / std::filesystem::path{this->bucket};
+            type = PathDetails::TYPE::BUCKET;
+        }
+        if (path_parts.size() > 1)
+        {
+            this->bucket = path_parts.front();
+            this->bucket_path = object_root / std::filesystem::path{this->bucket};
+            path_parts.pop_front();
+            this->key = boost::algorithm::join(path_parts, "/");
+            boost::compute::detail::sha1 sha1{this->key};
+            this->hash = sha1;
+            this->object_path = this->bucket_path / this->hash;
+            type = PathDetails::TYPE::OBJECT;
+        }
+    }
+
     std::string bucket;
     std::string key;
     std::string hash;
     std::filesystem::path bucket_path;
     std::filesystem::path object_path;
 
-    bool has_key()
+    enum class TYPE
     {
-        return (!key.empty());
-    }
+        BUCKET,
+        OBJECT,
+        LIST_BUCKET,
+        LIST_OBJECT
+    };
 
-    bool has_bucket()
-    {
-        return (!bucket.empty());
-    }
+    PathDetails::TYPE type;
 };
 
 class S3HttpServer : public HttpServer
 {
 public:
-    S3HttpServer(unsigned short port, const char *storage_root, const char *path) : HttpServer(port, storage_root), m_path(path)
+    S3HttpServer(unsigned short port, const char *storage_root, const char *path) : HttpServer(port, storage_root)
     {
         using namespace boost;
 
@@ -45,59 +69,36 @@ public:
             m_path_parts.push_back(seg.decode());
     }
 
-private:
-    /**
-     *  Strip the fixed url parts from the full url
-     *  to leave the bucket and key
-     */
-    PathDetails getParts(Request &request)
-    {
-
-        std::list<std::string> path_segments = request.segments();
-
-        path_segments.remove_if([this](std::string s)
-                                { return count(m_path_parts.begin(), m_path_parts.end(), s); });
-
-        PathDetails details;
-
-        if (path_segments.size() > 0)
-        {
-            details.bucket = path_segments.front();
-            details.bucket_path = getRootPath() / std::filesystem::path{details.bucket};
-        }
-        if (path_segments.size() > 1)
-        {
-            path_segments.pop_front();
-            details.key = boost::algorithm::join(path_segments, "/");
-            boost::compute::detail::sha1 sha1{details.key};
-            details.hash = sha1;
-            details.object_path = details.bucket_path / details.hash;
-        }
-
-        return details;
-    }
-
 protected:
+    /**
+     *   DELETE either a bucket or object
+     *
+     */
     virtual void DELETE(Request &request, int client_socket)
     {
         PathDetails details = getParts(request);
 
-        if (details.has_bucket() && !details.has_key())
+        switch (details.type)
+        {
+        case PathDetails::TYPE::BUCKET:
         {
             BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-
             DELETE_BUCKET(request, client_socket, details);
+            break;
         }
-        else if (details.has_key())
+        case PathDetails::TYPE::OBJECT:
         {
-
+            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
             BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
-
             DELETE_OBJECT(request, client_socket, details);
+            break;
         }
-        else
+        default:
         {
             BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
+            BadRequest(request, client_socket);
+            break;
+        }
         }
     }
 
@@ -105,21 +106,27 @@ protected:
     {
         PathDetails details = getParts(request);
 
-        if (details.has_bucket() && !details.has_key())
+        switch (details.type)
+        {
+        case PathDetails::TYPE::BUCKET:
         {
             BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-
             HEAD_BUCKET(request, client_socket, details);
+            break;
         }
-        else if (details.has_key())
+        case PathDetails::TYPE::OBJECT:
         {
+            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
             BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
-
             HEAD_OBJECT(request, client_socket, details);
+            break;
         }
-        else
+        default:
         {
             BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
+            BadRequest(request, client_socket);
+            break;
+        }
         }
     }
 
@@ -127,20 +134,32 @@ protected:
     {
         PathDetails details = getParts(request);
 
-        if (details.has_bucket() == false)
+        switch (details.type)
+        {
+        case PathDetails::TYPE::LIST_BUCKET:
         {
             LIST_BUCKET(request, client_socket);
+            break;
         }
-        else if (details.has_bucket() && !details.has_key())
-        {
-            GET_BUCKET(request, client_socket, details);
-        }
-        else if (details.has_key())
+        case PathDetails::TYPE::OBJECT:
         {
             BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
             BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
-
             GET_OBJECT(request, client_socket, details);
+            break;
+        }
+        case PathDetails::TYPE::BUCKET:
+        {
+            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+            GET_BUCKET(request, client_socket, details);
+            break;
+        }
+        default:
+        {
+            BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
+            BadRequest(request, client_socket);
+            break;
+        }
         }
     }
 
@@ -148,17 +167,28 @@ protected:
     {
         PathDetails details = getParts(request);
 
-        if (details.has_key() == false)
+        switch (details.type)
         {
-            PUT_BUCKET(request, client_socket, details);
-        }
-        else
+        case PathDetails::TYPE::OBJECT:
         {
             BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
             BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
             BOOST_LOG_TRIVIAL(debug) << "HASH: " << details.hash;
-
             PUT_OBJECT(request, client_socket, details);
+            break;
+        }
+        case PathDetails::TYPE::BUCKET:
+        {
+            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+            PUT_BUCKET(request, client_socket, details);
+            break;
+        }
+        default:
+        {
+            BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
+            BadRequest(request, client_socket);
+            break;
+        }
         }
     }
 
@@ -169,6 +199,29 @@ protected:
 private:
     void DELETE_OBJECT(Request &request, int client_socket, PathDetails &details)
     {
+        Response response{};
+
+        std::ostringstream ss;
+
+        if (std::filesystem::exists(details.object_path))
+        {
+            if (std::filesystem::remove(details.object_path))
+            {
+                ss << Response::NO_CONTENT << "\n";
+            }
+            else
+            {
+                ss << Response::SERVER_ERROR << "\n";
+            }
+        }
+        else
+        {
+            ss << Response::NOT_FOUND << "\n";
+        }
+
+        ss << response.headers_str();
+        std::string response_buff(ss.str());
+        write(client_socket, response_buff.c_str(), response_buff.size());
     }
 
     void PUT_OBJECT(Request &request, int client_socket, PathDetails &details)
@@ -227,6 +280,71 @@ private:
 
     void GET_OBJECT(Request &request, int client_socket, PathDetails &details)
     {
+        Response response{};
+
+        // Check file can be read and exists
+        if (access(details.object_path.c_str(), R_OK) != 0)
+        {
+            std::ostringstream ss;
+            ss << Response::NOT_FOUND << "\n";
+            ss << response.headers_str();
+            std::string response_buff(ss.str());
+            write(client_socket, response_buff.c_str(), response_buff.size());
+            return;
+        }
+
+        struct stat file_details;
+        if (stat(details.object_path.c_str(), &file_details) == 0)
+        {
+            response.addFileHeaders(&file_details, details.object_path);
+
+            // check for etag match
+            if (request.hasHeader("If-Modified-Since"))
+            {
+                if (request.getHeader("If-None-Match") == response.getHeader("Etag"))
+                {
+                    std::ostringstream ss;
+                    ss << Response::NOT_MODIFIED << "\n";
+                    ss << response.headers_str();
+                    std::string response_buff(ss.str());
+                    write(client_socket, response_buff.c_str(), response_buff.size());
+                    return;
+                }
+            }
+
+            if (request.hasHeader("If-Modified-Since"))
+            {
+                if (request.getHeader("If-Match") != response.getHeader("Etag"))
+                {
+                    std::ostringstream ss;
+                    ss << Response::PRE_FAILED << "\n";
+                    ss << response.headers_str();
+                    std::string response_buff(ss.str());
+                    write(client_socket, response_buff.c_str(), response_buff.size());
+                    return;
+                }
+            }
+
+            if (request.hasHeader("If-Modified-Since"))
+            {
+                // TODO
+            }
+
+            std::ostringstream ss;
+            ss << Response::OK << "\n";
+            ss << response.headers_str();
+            std::string response_buff(ss.str());
+            write(client_socket, response_buff.c_str(), response_buff.size());
+
+            // send content
+            off_t off = 0;
+            int in_fd = open(details.object_path.c_str(), O_RDONLY);
+            ssize_t sentbytes = sendfile(client_socket, in_fd, &off, file_details.st_size);
+            close(in_fd);
+
+            if (sentbytes != file_details.st_size)
+                BOOST_LOG_TRIVIAL(error) << "Error sending file contents";
+        }
     }
 
     void GET_BUCKET(Request &request, int client_socket, PathDetails &details)
@@ -337,12 +455,20 @@ private:
         struct stat path_struct;
         if (stat(details.object_path.c_str(), &path_struct) == 0)
         {
-            ss << Response::OK << "\n";
-            response.addFileHeaders(&path_struct, details.object_path);
+            if ((path_struct.st_mode & S_IFMT) == S_IFREG)
+            {
+                ss << Response::OK << "\n";
+                // content type is incorrect
+                response.addFileHeaders(&path_struct, details.object_path);
+            }
+            else
+            {
+                BadRequest(request, client_socket);
+            }
         }
         else
         {
-            ss << Response::SERVER_ERROR << "\n";
+            ss << Response::NOT_FOUND << "\n";
         }
 
         ss << response.headers_str();
@@ -367,6 +493,31 @@ private:
     }
 
 private:
-    std::string m_path;
+    /**
+     *  Strip the fixed url parts from the full url
+     *  to leave the bucket and key
+     */
+    PathDetails getParts(Request &request)
+    {
+
+        std::list<std::string> path_segments = request.segments();
+
+        path_segments.remove_if([this](std::string s)
+                                { return count(m_path_parts.begin(), m_path_parts.end(), s); });
+
+        PathDetails details(path_segments, getRootPath());
+
+        return details;
+    }
+
+    void BadRequest(Request &request, int client_socket)
+    {
+        std::ostringstream ss;
+        ss << Response::BAD_REQUEST << "\n";
+        std::string response_buff(ss.str());
+        write(client_socket, response_buff.c_str(), response_buff.size());
+    }
+
+private:
     std::vector<std::string> m_path_parts;
 };

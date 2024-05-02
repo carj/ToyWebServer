@@ -17,7 +17,6 @@
 #include <algorithm>
 #include <stdexcept>
 
-
 #include <boost/log/trivial.hpp>
 #include <boost/url.hpp>
 #include <boost/algorithm/string.hpp>
@@ -43,7 +42,6 @@ public:
 
         // Some Default Headers
         m_headers.emplace("Date", str);
-        // m_headers.emplace("Content-Length", "0");
         m_headers.emplace("Server", "C++ Test Server");
         m_headers.emplace("Connection", "keep-alive");
 
@@ -57,6 +55,7 @@ public:
     static constexpr std::string_view NO_CONTENT = "HTTP/1.1 204 No Content";
     static constexpr std::string_view NOT_MODIFIED = "HTTP/1.1 304 Not Modified";
     static constexpr std::string_view BAD_REQUEST = "HTTP/1.1 400 Bad Request";
+    static constexpr std::string_view PRE_FAILED =  "HTTP/1.1 412 Precondition Failed";
     static constexpr std::string_view NOT_ALLOWED = "HTTP/1.1 405 Method Not Allowed";
     static constexpr std::string_view EXISTS = "HTTP/1.1 409 Conflict";
     static constexpr std::string_view SERVER_ERROR = "HTTP/1.1 500 Internal Server Error";
@@ -185,7 +184,6 @@ private:
  */
 class Request
 {
-
 public:
     Request(const std::string &request_line) : m_method(), m_path(), m_version("HTTP/1.1"), m_headers(), m_params()
     {
@@ -206,6 +204,17 @@ public:
 
         m_method = request_parts[0];
         m_version = request_parts[2];
+
+        if (m_method == "GET")
+            http_method = METHOD::GET;
+        if (m_method == "POST")
+            http_method = METHOD::POST;
+        if (m_method == "PUT")
+            http_method = METHOD::PUT;
+        if (m_method == "HEAD")
+            http_method = METHOD::HEAD;
+        if (m_method == "DELETE")
+            http_method = METHOD::DELETE;
 
         for (std::string &line : header_lines)
         {
@@ -231,16 +240,33 @@ public:
             m_params.emplace(algorithm::trim_copy(param.key), algorithm::trim_copy(param.value));
     }
 
+    enum class METHOD
+    {
+        GET,
+        POST,
+        PUT,
+        HEAD,
+        DELETE
+    };
+
+    Request::METHOD http_method;
+
     /**
      *  Get a Request Header by its Key
      *
      */
     std::string getHeader(const char *key)
     {
-        if (m_headers.find(key) == m_headers.end())
+        
+        std::string k = boost::algorithm::to_lower_copy(std::string(key));
+        if (m_headers.find(k) == m_headers.end())
             return "";
         else
-            return m_headers[key];
+            return m_headers[k];
+    }
+
+    bool hasHeader(const char *key) {
+        return !(m_headers.find(boost::algorithm::to_lower_copy(std::string(key))) == m_headers.end());
     }
 
     std::string method() const { return m_method; }
@@ -308,76 +334,22 @@ public:
         BOOST_LOG_TRIVIAL(debug) << "Socket Closed: " << std::to_string(m_server_sock);
     }
 
-    ssize_t readn(int fd, unsigned char *buff, size_t length)
-    {
-
-        size_t nleft;
-        ssize_t nread;
-        unsigned char *ptr;
-
-        ptr = buff;
-        nleft = length;
-        while (nleft > 0)
-        {
-            if ((nread = recv(fd, ptr, nleft, MSG_DONTWAIT)) < 0)
-            {
-                if (errno == EINTR)
-                {
-                    nread = 0;
-                }
-                else
-                {
-                    return (-1);
-                }
-            }
-            else if (nread == 0)
-            {
-                break;
-            }
-
-            nleft -= nread;
-            ptr += nread;
-        }
-        return (length - nleft);
-    }
-
     std::string read_request(int client_socket)
     {
         std::vector<unsigned char> buffer;
 
-        read_socket(client_socket, buffer);
+        unsigned char sock_buff[1024];
+        ssize_t nread = 0;
+        do
+        {
+            nread = recv(client_socket, sock_buff, 1024, MSG_DONTWAIT);
+            if (nread > 0)
+                buffer.insert(buffer.end(), sock_buff, sock_buff + nread);
+        } while (nread > 0);
 
-        BOOST_LOG_TRIVIAL(debug) << "READ Socket: " << buffer.size() << " Bytes Found";
-
-        std::cout << std::endl;
-
-        std::string head_sep{"\r\n\r\n"};
-
-        auto iter = std::search(buffer.begin(), buffer.end(), head_sep.begin(), head_sep.end());
-
-        std::string str(buffer.begin(), iter);
+        std::string str(buffer.begin(), buffer.end());
 
         return str;
-    }
-
-    void read_socket(int client_socket, std::vector<unsigned char> &buffer)
-    {
-        int SOCK_BUFF_LEN = 1;
-        unsigned char buff[SOCK_BUFF_LEN];
-        ssize_t bytes = readn(client_socket, buff, SOCK_BUFF_LEN);
-        if (bytes > 0)
-        {
-            buffer.insert(buffer.end(), buff, buff + bytes);
-        }
-
-        while (bytes == SOCK_BUFF_LEN)
-        {
-            bytes = readn(client_socket, buff, SOCK_BUFF_LEN);
-            if (bytes > 0)
-            {
-                buffer.insert(buffer.end(), buff, buff + bytes);
-            }
-        }
     }
 
     /**
@@ -402,49 +374,32 @@ public:
 
                     std::string rcv = read_request(client_socket);
 
-                    /**
-                    char buffer[BUFSIZ];
-                    ssize_t bytes = read(client_socket, buffer, BUFSIZ);
-                    buffer[bytes] = 0;
-
-                    char *ps = strstr(buffer, "\r\n\r\n");
-                    printf("%s\n", ps);
-                    printf("Length %ld\n", strlen(ps));
-
-                    std::string rcv(buffer);
-
-                    */
-
                     // parse the client request
                     Request request{rcv};
 
                     BOOST_LOG_TRIVIAL(info) << "Method: " << request.method();
                     BOOST_LOG_TRIVIAL(info) << "Path: " << request.path();
 
-                    // process the GET requests
-                    if (request.method() == "GET")
+                    switch (request.http_method)
                     {
+                    case Request::METHOD::GET:
                         GET(request, client_socket);
-                    }
-
-                    if (request.method() == "HEAD")
-                    {
+                        break;
+                    case Request::METHOD::HEAD:
                         HEAD(request, client_socket);
-                    }
-
-                    if (request.method() == "PUT")
-                    {
+                        break;
+                    case Request::METHOD::PUT:
                         PUT(request, client_socket);
-                    }
-
-                    if (request.method() == "POST")
-                    {
+                        break;
+                    case Request::METHOD::POST:
                         POST(request, client_socket);
-                    }
-
-                    if (request.method() == "DELETE")
-                    {
+                        break;
+                    case Request::METHOD::DELETE:
                         DELETE(request, client_socket);
+                        break;
+                    default:
+                        not_allowed(client_socket);
+                        break;
                     }
 
                     // close the client socket from the child
@@ -467,63 +422,7 @@ protected:
 
     virtual void PUT(Request &request, int client_socket)
     {
-        Response response{};
-        std::ostringstream ss_cont;
-
-        ss_cont << Response::CONTINUE << "\r\n\r\n";
-        std::string response_cont(ss_cont.str());
-        write(client_socket, response_cont.c_str(), response_cont.size());
-        fsync(client_socket);
-        BOOST_LOG_TRIVIAL(info) << response_cont;
-
-        unsigned long length = atol(request.getHeader("content-length").c_str());
-
-        unsigned char B[1024];
-
-        recv(client_socket, B, 128, MSG_PEEK);
-
-        BOOST_LOG_TRIVIAL(info) << "HEADER Length: " << length;
-
-        std::vector<unsigned char> buffer;
-
-        ssize_t nread = -1;
-        do
-        {
-            nread = recv(client_socket, B, 1024, MSG_DONTWAIT);
-            if (nread > 0)
-                buffer.insert(buffer.end(), B, B + nread);
-        } while (nread > 0);
-
-        std::string key = "key.png";
-
-        BOOST_LOG_TRIVIAL(info) << response_cont;
-
-        BOOST_LOG_TRIVIAL(info) << "BUFF Size: " << buffer.size();
-
-        std::ofstream myfile;
-        myfile.open(key);
-        for (unsigned char c : buffer)
-        {
-            myfile << c;
-        }
-        myfile.close();
-
-        std::ostringstream ss_ok;
-
-        if (std::filesystem::file_size(key) == length)
-        {
-            ss_ok << Response::CREATED << "\n";
-        }
-        else
-        {
-            ss_ok << Response::BAD_REQUEST << "\n";
-        }
-
-        ss_ok << response.headers_str();
-        std::string response_ok(ss_ok.str());
-        write(client_socket, response_ok.c_str(), response_ok.size());
-        fsync(client_socket);
-        BOOST_LOG_TRIVIAL(info) << response_ok;
+        not_allowed(client_socket);
     }
 
     virtual void POST(Request &request, int client_socket)
@@ -580,7 +479,6 @@ protected:
      */
     virtual void GET(Request &request, int client_socket)
     {
-
         std::filesystem::path root{m_www_root};
         std::filesystem::path req_path{request.path()};
 
@@ -645,7 +543,7 @@ private:
 
         std::ostringstream ss;
         ss << Response::NOT_ALLOWED << "\n";
-        ss << "Allow: GET, HEAD"
+        ss << "Allow: GET, HEAD, PUT, DELETE"
            << "\n";
         ss << response.headers_str();
         std::string response_buff(ss.str());
