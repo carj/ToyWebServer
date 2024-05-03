@@ -85,7 +85,7 @@ public:
         m_headers["Etag"] = oss.str();
 
         m_headers["Content-Length"] = std::to_string(details->st_size);
-        m_headers["Content-Type"] = content_type(path.filename());
+        m_headers["Content-Type"] = mime_type(path.filename());
     }
 
     /**
@@ -120,12 +120,11 @@ public:
             return m_headers[key];
     }
 
-private:
-    /**
+   /**
      *  return the mime type based on the filename
      *
      */
-    inline std::string content_type(const std::filesystem::path &filename)
+    inline std::string mime_type(const std::filesystem::path &filename)
     {
         std::string extension = filename.extension();
         if (m_mime.find(extension) == m_mime.end())
@@ -134,6 +133,9 @@ private:
             return m_mime[filename.extension()];
     }
 
+
+private:
+ 
     /**
      *  define some simple mime types
      *  based on file extensions
@@ -250,6 +252,20 @@ public:
     };
 
     Request::METHOD http_method;
+
+
+
+    template<typename Predicate>
+    Headers getCustomHeaders(Predicate pred) {
+        Headers custom_metadata;
+
+        for (auto& h: m_headers) {
+            if (pred(h))
+                custom_metadata.emplace((h).first, (h).second);
+        }
+
+        return custom_metadata;
+    }
 
     /**
      *  Get a Request Header by its Key

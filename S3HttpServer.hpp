@@ -9,6 +9,19 @@
 
 #include "HttpServer.hpp"
 
+struct CustomMetadata
+{
+
+    CustomMetadata() : prefix("x-amz-meta-") {}
+    bool operator()(const std::pair<std::string, std::string> &p)
+    {
+        return (p.first.rfind(prefix, 0) == 0);
+    }
+
+public:
+    std::string prefix;
+};
+
 struct PathDetails
 {
     PathDetails(std::list<std::string> path_parts, std::filesystem::path object_root) : bucket(""), key(""), hash("")
@@ -51,6 +64,9 @@ struct PathDetails
     };
 
     PathDetails::TYPE type;
+
+    static constexpr const char *XATT_PREFIX = "user.S3.";
+    static constexpr const char *XATT_MIME_TYPE = "user.S3.MimeType";
 };
 
 class S3HttpServer : public HttpServer
@@ -234,7 +250,7 @@ private:
         std::string response_cont(ss_cont.str());
         write(client_socket, response_cont.c_str(), response_cont.size());
         fsync(client_socket);
-        BOOST_LOG_TRIVIAL(info) << response_cont;
+        BOOST_LOG_TRIVIAL(info) << Response::CONTINUE;
 
         // Get the expected message length
         long int length = atol(request.getHeader("content-length").c_str());
@@ -255,6 +271,19 @@ private:
                 object_file.write(sock_buff, nread);
         } while (nread > 0);
         object_file.close();
+
+        std::string mime_type = response.mime_type(details.key);
+        setxattr(details.object_path.c_str(), PathDetails::XATT_MIME_TYPE, mime_type.c_str(), mime_type.size(), 0);
+
+        CustomMetadata amzMetadata;
+        Headers custom = request.getCustomHeaders<CustomMetadata>(amzMetadata);
+        for (auto &h : custom)
+        {
+            std::string k = (h.first);
+            k.erase(0, amzMetadata.prefix.size());
+            std::string custom_name = std::string(PathDetails::XATT_PREFIX) + k;
+            setxattr(details.object_path.c_str(), custom_name.c_str(), h.second.c_str(), h.second.size(), 0);
+        }
 
         struct stat struct_stat;
         stat(details.object_path.c_str(), &struct_stat);
@@ -329,6 +358,8 @@ private:
             {
                 // TODO
             }
+
+            getAttributes(details.object_path, response);
 
             std::ostringstream ss;
             ss << Response::OK << "\n";
@@ -471,11 +502,17 @@ private:
             ss << Response::NOT_FOUND << "\n";
         }
 
+        getAttributes(details.object_path, response);
+
         ss << response.headers_str();
         std::string response_buff(ss.str());
         write(client_socket, response_buff.c_str(), response_buff.size());
     }
 
+    /**
+     *  Bucket Details
+     * 
+    */
     void HEAD_BUCKET(Request &request, int client_socket, PathDetails &details)
     {
         Response response{};
@@ -494,12 +531,52 @@ private:
 
 private:
     /**
+     *  Read the file system attrubutes back into the response Object
+     *
+     */
+    void getAttributes(std::filesystem::path &path, Response &response)
+    {
+        ssize_t sz = getxattr(path.c_str(), PathDetails::XATT_MIME_TYPE, NULL, 0);
+        if (sz > 0) {
+            char attr[sz + 1];
+            sz = getxattr(path.c_str(), PathDetails::XATT_MIME_TYPE, attr, sz);
+            attr[sz] = '\0';
+            response.addHeader("Content-Type", std::string(attr));
+        }
+
+        ssize_t attr_len = listxattr(path.c_str(), NULL, 0);
+        if (attr_len > 0) {
+            char attr_buf[attr_len + 1];
+            attr_len = listxattr(path.c_str(), attr_buf, attr_len);
+            attr_buf[attr_len] = '\0';
+            char *key = attr_buf;
+            size_t keylen = 0;
+            while (attr_len > 0)
+            {
+                ssize_t val_len = getxattr(path.c_str(), key, NULL, 0);
+                if (val_len > 0)
+                {
+                    char attr_key_buf[val_len + 1];
+                    val_len = getxattr(path.c_str(), key, attr_key_buf, val_len);
+                    attr_key_buf[val_len] = 0;
+                    std::string hkey = std::string(key).erase(0, strlen(PathDetails::XATT_PREFIX));
+                    response.addHeader(hkey, std::string(attr_key_buf));
+                    keylen = strlen(key) + 1;
+                    key += keylen;
+                    attr_len -= keylen;
+                }
+            }
+        }
+    }
+
+    /**
      *  Strip the fixed url parts from the full url
      *  to leave the bucket and key
+     * 
+     *  Return object containing details of the request.
      */
     PathDetails getParts(Request &request)
     {
-
         std::list<std::string> path_segments = request.segments();
 
         path_segments.remove_if([this](std::string s)
@@ -510,6 +587,10 @@ private:
         return details;
     }
 
+    /**
+     *  Return 400 BAD REQUEST 
+     * 
+    */
     void BadRequest(Request &request, int client_socket)
     {
         std::ostringstream ss;
