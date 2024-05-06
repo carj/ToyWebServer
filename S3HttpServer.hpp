@@ -59,14 +59,14 @@ struct PathDetails
     {
         BUCKET,
         OBJECT,
-        LIST_BUCKET,
-        LIST_OBJECT
+        LIST_BUCKET
     };
 
     PathDetails::TYPE type;
 
     static constexpr const char *XATT_PREFIX = "user.S3.";
     static constexpr const char *XATT_MIME_TYPE = "user.S3.MimeType";
+    static constexpr const char *XATT_KEY_NAME = "user.S3.Key";
 };
 
 class S3HttpServer : public HttpServer
@@ -96,25 +96,25 @@ protected:
 
         switch (details.type)
         {
-        case PathDetails::TYPE::BUCKET:
-        {
-            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-            DELETE_BUCKET(request, client_socket, details);
-            break;
-        }
-        case PathDetails::TYPE::OBJECT:
-        {
-            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-            BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
-            DELETE_OBJECT(request, client_socket, details);
-            break;
-        }
-        default:
-        {
-            BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
-            BadRequest(request, client_socket);
-            break;
-        }
+            case PathDetails::TYPE::BUCKET:
+            {
+                BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+                DELETE_BUCKET(request, client_socket, details);
+                break;
+            }
+            case PathDetails::TYPE::OBJECT:
+            {
+                BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+                BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
+                DELETE_OBJECT(request, client_socket, details);
+                break;
+            }
+            default:
+            {
+                BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
+                BadRequest(request, client_socket);
+                break;
+            }
         }
     }
 
@@ -124,25 +124,25 @@ protected:
 
         switch (details.type)
         {
-        case PathDetails::TYPE::BUCKET:
-        {
-            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-            HEAD_BUCKET(request, client_socket, details);
-            break;
-        }
-        case PathDetails::TYPE::OBJECT:
-        {
-            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-            BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
-            HEAD_OBJECT(request, client_socket, details);
-            break;
-        }
-        default:
-        {
-            BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
-            BadRequest(request, client_socket);
-            break;
-        }
+            case PathDetails::TYPE::BUCKET:
+            {
+                BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+                HEAD_BUCKET(request, client_socket, details);
+                break;
+            }
+            case PathDetails::TYPE::OBJECT:
+            {
+                BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+                BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
+                HEAD_OBJECT(request, client_socket, details);
+                break;
+            }
+            default:
+            {
+                BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
+                BadRequest(request, client_socket);
+                break;
+            }
         }
     }
 
@@ -152,30 +152,30 @@ protected:
 
         switch (details.type)
         {
-        case PathDetails::TYPE::LIST_BUCKET:
-        {
-            LIST_BUCKET(request, client_socket);
-            break;
-        }
-        case PathDetails::TYPE::OBJECT:
-        {
-            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-            BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
-            GET_OBJECT(request, client_socket, details);
-            break;
-        }
-        case PathDetails::TYPE::BUCKET:
-        {
-            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-            GET_BUCKET(request, client_socket, details);
-            break;
-        }
-        default:
-        {
-            BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
-            BadRequest(request, client_socket);
-            break;
-        }
+            case PathDetails::TYPE::LIST_BUCKET:
+            {
+                LIST_BUCKET(request, client_socket, details);
+                break;
+            }
+            case PathDetails::TYPE::OBJECT:
+            {
+                BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+                BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
+                GET_OBJECT(request, client_socket, details);
+                break;
+            }
+            case PathDetails::TYPE::BUCKET:
+            {
+                BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+                LIST_OBJECT(request, client_socket, details);
+                break;
+            }
+            default:
+            {
+                BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
+                BadRequest(request, client_socket);
+                break;
+            }
         }
     }
 
@@ -272,18 +272,9 @@ private:
         } while (nread > 0);
         object_file.close();
 
-        std::string mime_type = response.mime_type(details.key);
-        setxattr(details.object_path.c_str(), PathDetails::XATT_MIME_TYPE, mime_type.c_str(), mime_type.size(), 0);
 
-        CustomMetadata amzMetadata;
-        Headers custom = request.getCustomHeaders<CustomMetadata>(amzMetadata);
-        for (auto &h : custom)
-        {
-            std::string k = (h.first);
-            k.erase(0, amzMetadata.prefix.size());
-            std::string custom_name = std::string(PathDetails::XATT_PREFIX) + k;
-            setxattr(details.object_path.c_str(), custom_name.c_str(), h.second.c_str(), h.second.size(), 0);
-        }
+        setAttributes(details.object_path, details, response, request);
+
 
         struct stat struct_stat;
         stat(details.object_path.c_str(), &struct_stat);
@@ -359,7 +350,7 @@ private:
                 // TODO
             }
 
-            getAttributes(details.object_path, response);
+            getAttributes(details.object_path, response.headers());
 
             std::ostringstream ss;
             ss << Response::OK << "\n";
@@ -378,11 +369,51 @@ private:
         }
     }
 
-    void GET_BUCKET(Request &request, int client_socket, PathDetails &details)
+    void LIST_OBJECT(Request &request, int client_socket, PathDetails &details)
     {
+        Response response{};
+
+        std::ostringstream mesg;
+        mesg << "<ListBucketResult>\n";
+        mesg << "\t<Name>"<< details.bucket << "</Name>\n";
+        mesg << "\t<IsTruncated>false</IsTruncated>\n";
+
+        for (const auto & entry : std::filesystem::directory_iterator(details.bucket_path)) {
+
+            Headers attributes;
+            getAttributes(entry.path(), attributes);
+
+            struct stat struct_stat;
+            stat(entry.path().c_str(), &struct_stat);
+            std::string last_mod{std::ctime(&(struct_stat.st_mtim).tv_sec)};
+            last_mod.pop_back();
+
+            mesg << "\t\t<Contents>\n";
+            mesg << "\t\t<Key>" << entry.path().filename().c_str() << "</Key>\n";
+            mesg << "\t\t<LastModified>" << last_mod << "</LastModified>\n";
+            mesg << "<ETag>" << struct_stat.st_ino << "-" << struct_stat.st_size << "-" << struct_stat.st_mtim.tv_sec << "</ETag>";
+            mesg << "<Size>" << struct_stat.st_size << "</Size>\n";
+            mesg << "\t\t</Contents>\n";
+        }
+
+        mesg << "</ListBucketResult>\n";
+
+        std::string mesg_buff(mesg.str());
+
+        response.setContentLength(mesg_buff.length());
+        response.setContentType(".xml");
+
+        std::ostringstream ss;
+        ss << Response::OK << "\n";
+        ss << response.headers_str();
+        ss << mesg_buff;
+        std::string response_buff(ss.str());
+
+        write(client_socket, response_buff.data(), response_buff.size());
+
     }
 
-    void LIST_BUCKET(Request &request, int client_socket)
+    void LIST_BUCKET(Request &request, int client_socket, PathDetails &details)
     {
         std::filesystem::path path = getRootPath();
 
@@ -458,6 +489,13 @@ private:
 
         if (std::filesystem::exists(details.bucket_path))
         {
+            for (const auto & entry : std::filesystem::directory_iterator(details.bucket_path)) {
+                ss << Response::CONFLICT << "\n";
+                ss << response.headers_str();
+                std::string response_buff(ss.str());
+                write(client_socket, response_buff.c_str(), response_buff.size());
+                return;
+            }
             if (std::filesystem::remove(details.bucket_path))
             {
                 ss << Response::NO_CONTENT << "\n";
@@ -489,8 +527,7 @@ private:
             if ((path_struct.st_mode & S_IFMT) == S_IFREG)
             {
                 ss << Response::OK << "\n";
-                // content type is incorrect
-                response.addFileHeaders(&path_struct, details.object_path);
+                response.addHeader("Content-Length", std::to_string(path_struct.st_size));
             }
             else
             {
@@ -502,7 +539,7 @@ private:
             ss << Response::NOT_FOUND << "\n";
         }
 
-        getAttributes(details.object_path, response);
+        getAttributes(details.object_path, response.headers());
 
         ss << response.headers_str();
         std::string response_buff(ss.str());
@@ -530,19 +567,48 @@ private:
     }
 
 private:
+
+    void setAttributes(const std::filesystem::path &path, PathDetails& details, Response& response, Request& request) {
+
+        std::string mime_type = response.mime_type(details.key);
+        if (setxattr(details.object_path.c_str(), PathDetails::XATT_MIME_TYPE, mime_type.c_str(), mime_type.size(), 0) < 0) {
+            perror(PathDetails::XATT_MIME_TYPE);    
+            BOOST_LOG_TRIVIAL(error) << "FS Extended Attribute Not Set";
+        }
+
+        if (setxattr(details.object_path.c_str(), PathDetails::XATT_KEY_NAME, details.key.c_str(), details.key.size(), 0) < 0) {
+            perror(PathDetails::XATT_KEY_NAME);    
+            BOOST_LOG_TRIVIAL(error) << "FS Extended Attribute Not Set";
+        }
+
+        CustomMetadata amzMetadata;
+        Headers custom = request.getCustomHeaders<CustomMetadata>(amzMetadata);
+        for (auto &h : custom)
+        {
+            std::string k = (h.first);
+            k.erase(0, amzMetadata.prefix.size());
+            std::string custom_name = std::string(PathDetails::XATT_PREFIX) + k;
+            setxattr(details.object_path.c_str(), custom_name.c_str(), h.second.c_str(), h.second.size(), 0);
+        }
+
+    }
+
+
     /**
      *  Read the file system attrubutes back into the response Object
      *
      */
-    void getAttributes(std::filesystem::path &path, Response &response)
+    void getAttributes(const std::filesystem::path &path, Headers& headers)
     {
         ssize_t sz = getxattr(path.c_str(), PathDetails::XATT_MIME_TYPE, NULL, 0);
         if (sz > 0) {
             char attr[sz + 1];
             sz = getxattr(path.c_str(), PathDetails::XATT_MIME_TYPE, attr, sz);
             attr[sz] = '\0';
-            response.addHeader("Content-Type", std::string(attr));
+            headers.emplace("Content-Type", std::string(attr));
         }
+
+       
 
         ssize_t attr_len = listxattr(path.c_str(), NULL, 0);
         if (attr_len > 0) {
@@ -559,8 +625,8 @@ private:
                     char attr_key_buf[val_len + 1];
                     val_len = getxattr(path.c_str(), key, attr_key_buf, val_len);
                     attr_key_buf[val_len] = 0;
-                    std::string hkey = std::string(key).erase(0, strlen(PathDetails::XATT_PREFIX));
-                    response.addHeader(hkey, std::string(attr_key_buf));
+                    std::string hkey = "x-amz-meta-" + std::string(key).erase(0, strlen(PathDetails::XATT_PREFIX));
+                    headers.emplace(hkey, std::string(attr_key_buf));
                     keylen = strlen(key) + 1;
                     key += keylen;
                     attr_len -= keylen;

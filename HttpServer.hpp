@@ -55,6 +55,7 @@ public:
     static constexpr std::string_view NO_CONTENT = "HTTP/1.1 204 No Content";
     static constexpr std::string_view NOT_MODIFIED = "HTTP/1.1 304 Not Modified";
     static constexpr std::string_view BAD_REQUEST = "HTTP/1.1 400 Bad Request";
+    static constexpr std::string_view CONFLICT = "HTTP/1.1 409 Conflict";
     static constexpr std::string_view PRE_FAILED =  "HTTP/1.1 412 Precondition Failed";
     static constexpr std::string_view NOT_ALLOWED = "HTTP/1.1 405 Method Not Allowed";
     static constexpr std::string_view EXISTS = "HTTP/1.1 409 Conflict";
@@ -67,6 +68,10 @@ public:
     inline void setContentType(std::string extension)
     {
         m_headers["Content-Type"] = m_mime[extension];
+    }
+
+    inline Headers& headers() {
+        return m_headers;
     }
 
     /**
@@ -160,7 +165,7 @@ private:
         m_mime.emplace(".mp3", "audio/mpeg");
         m_mime.emplace(".mp4", "video/mp4");
         m_mime.emplace(".mpeg", "video/mpeg");
-        m_mime.emplace(".svg", "image/svg+xml");
+        m_mime.emplace(".svg", "image/sresponse.addHeadervg+xml");
         m_mime.emplace(".tif", "image/tiff");
         m_mime.emplace(".tiff", "image/tiff");
         m_mime.emplace(".ttf", "font/ttf");
