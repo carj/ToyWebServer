@@ -96,25 +96,25 @@ protected:
 
         switch (details.type)
         {
-            case PathDetails::TYPE::BUCKET:
-            {
-                BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-                DELETE_BUCKET(request, client_socket, details);
-                break;
-            }
-            case PathDetails::TYPE::OBJECT:
-            {
-                BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-                BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
-                DELETE_OBJECT(request, client_socket, details);
-                break;
-            }
-            default:
-            {
-                BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
-                BadRequest(request, client_socket);
-                break;
-            }
+        case PathDetails::TYPE::BUCKET:
+        {
+            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+            DELETE_BUCKET(request, client_socket, details);
+            break;
+        }
+        case PathDetails::TYPE::OBJECT:
+        {
+            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+            BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
+            DELETE_OBJECT(request, client_socket, details);
+            break;
+        }
+        default:
+        {
+            BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
+            BadRequest(request, client_socket);
+            break;
+        }
         }
     }
 
@@ -124,25 +124,25 @@ protected:
 
         switch (details.type)
         {
-            case PathDetails::TYPE::BUCKET:
-            {
-                BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-                HEAD_BUCKET(request, client_socket, details);
-                break;
-            }
-            case PathDetails::TYPE::OBJECT:
-            {
-                BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-                BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
-                HEAD_OBJECT(request, client_socket, details);
-                break;
-            }
-            default:
-            {
-                BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
-                BadRequest(request, client_socket);
-                break;
-            }
+        case PathDetails::TYPE::BUCKET:
+        {
+            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+            HEAD_BUCKET(request, client_socket, details);
+            break;
+        }
+        case PathDetails::TYPE::OBJECT:
+        {
+            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+            BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
+            HEAD_OBJECT(request, client_socket, details);
+            break;
+        }
+        default:
+        {
+            BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
+            BadRequest(request, client_socket);
+            break;
+        }
         }
     }
 
@@ -152,30 +152,30 @@ protected:
 
         switch (details.type)
         {
-            case PathDetails::TYPE::LIST_BUCKET:
-            {
-                LIST_BUCKET(request, client_socket, details);
-                break;
-            }
-            case PathDetails::TYPE::OBJECT:
-            {
-                BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-                BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
-                GET_OBJECT(request, client_socket, details);
-                break;
-            }
-            case PathDetails::TYPE::BUCKET:
-            {
-                BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
-                LIST_OBJECT(request, client_socket, details);
-                break;
-            }
-            default:
-            {
-                BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
-                BadRequest(request, client_socket);
-                break;
-            }
+        case PathDetails::TYPE::LIST_BUCKET:
+        {
+            LIST_BUCKET(request, client_socket, details);
+            break;
+        }
+        case PathDetails::TYPE::OBJECT:
+        {
+            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+            BOOST_LOG_TRIVIAL(debug) << "KEY: " << details.key;
+            GET_OBJECT(request, client_socket, details);
+            break;
+        }
+        case PathDetails::TYPE::BUCKET:
+        {
+            BOOST_LOG_TRIVIAL(debug) << "BUCKET: " << details.bucket;
+            LIST_OBJECT(request, client_socket, details);
+            break;
+        }
+        default:
+        {
+            BOOST_LOG_TRIVIAL(debug) << "Invalid Path";
+            BadRequest(request, client_socket);
+            break;
+        }
         }
     }
 
@@ -245,6 +245,17 @@ private:
         Response response{};
         std::ostringstream ss_cont;
 
+        // NoSuchBucket
+        if (!std::filesystem::exists(details.bucket_path))
+        {
+            BOOST_LOG_TRIVIAL(info) << "NoSuchBucket";
+            ss_cont << Response::NOT_FOUND << "\r\n\r\n";
+            std::string response_cont(ss_cont.str());
+            write(client_socket, response_cont.c_str(), response_cont.size());
+            fsync(client_socket);
+            return;
+        }
+
         // Send the 100 Contine message back to the client
         ss_cont << Response::CONTINUE << "\r\n\r\n";
         std::string response_cont(ss_cont.str());
@@ -272,9 +283,7 @@ private:
         } while (nread > 0);
         object_file.close();
 
-
         setAttributes(details.object_path, details, response, request);
-
 
         struct stat struct_stat;
         stat(details.object_path.c_str(), &struct_stat);
@@ -319,7 +328,7 @@ private:
             response.addFileHeaders(&file_details, details.object_path);
 
             // check for etag match
-            if (request.hasHeader("If-Modified-Since"))
+            if (request.hasHeader("If-None-Match"))
             {
                 if (request.getHeader("If-None-Match") == response.getHeader("Etag"))
                 {
@@ -332,7 +341,7 @@ private:
                 }
             }
 
-            if (request.hasHeader("If-Modified-Since"))
+            if (request.hasHeader("If-Match"))
             {
                 if (request.getHeader("If-Match") != response.getHeader("Etag"))
                 {
@@ -352,6 +361,51 @@ private:
 
             getAttributes(details.object_path, response.headers());
 
+            // does request contain range request
+            if (request.hasHeader("Range"))
+            {
+                std::string range_request = request.getHeader("Range");
+                std::vector<std::string> parts;
+                boost::split(parts, range_request, boost::is_any_of("="));
+                if ((parts.size() == 2) && (parts[0] == "bytes"))
+                {
+                    std::string range = parts[1];
+                    BOOST_LOG_TRIVIAL(info) << "ByteRange: " << range;
+
+                    std::vector<std::string> range_values;
+                    boost::split(range_values, range, boost::is_any_of("-"));
+                    std::string start = range_values[0];
+                    std::string end = range_values[1];
+                    if ((!start.empty()) && (!end.empty()))
+                    {
+                        ssize_t start_byte = atol(start.c_str());
+                        ssize_t end_byte = atol(start.c_str());
+                        ssize_t content_length = (end_byte - start_byte) + 1;
+                        if (content_length > 0)
+                        {
+
+                            std::ostringstream ss;
+                            ss << Response::PARTIAL << "\n";
+                            response.setContentLength(content_length);
+                            ss << response.headers_str();
+                            std::string response_buff(ss.str());
+                            write(client_socket, response_buff.c_str(), response_buff.size());
+
+                            off_t offset = start_byte;
+                            int in_fd = open(details.object_path.c_str(), O_RDONLY);
+                            ssize_t sent = sendfile(client_socket, in_fd, &offset, content_length);
+                            close(in_fd);
+
+                            if (sent != content_length)
+                                BOOST_LOG_TRIVIAL(error) << "Error sending file contents";
+
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // send the full content
             std::ostringstream ss;
             ss << Response::OK << "\n";
             ss << response.headers_str();
@@ -367,6 +421,14 @@ private:
             if (sentbytes != file_details.st_size)
                 BOOST_LOG_TRIVIAL(error) << "Error sending file contents";
         }
+        else
+        {
+            std::ostringstream ss;
+            ss << Response::NOT_FOUND << "\n";
+            ss << response.headers_str();
+            std::string response_buff(ss.str());
+            write(client_socket, response_buff.c_str(), response_buff.size());
+        }
     }
 
     void LIST_OBJECT(Request &request, int client_socket, PathDetails &details)
@@ -375,10 +437,11 @@ private:
 
         std::ostringstream mesg;
         mesg << "<ListBucketResult>\n";
-        mesg << "\t<Name>"<< details.bucket << "</Name>\n";
+        mesg << "\t<Name>" << details.bucket << "</Name>\n";
         mesg << "\t<IsTruncated>false</IsTruncated>\n";
 
-        for (const auto & entry : std::filesystem::directory_iterator(details.bucket_path)) {
+        for (const auto &entry : std::filesystem::directory_iterator(details.bucket_path))
+        {
 
             Headers attributes;
             getAttributes(entry.path(), attributes);
@@ -410,7 +473,6 @@ private:
         std::string response_buff(ss.str());
 
         write(client_socket, response_buff.data(), response_buff.size());
-
     }
 
     void LIST_BUCKET(Request &request, int client_socket, PathDetails &details)
@@ -489,7 +551,10 @@ private:
 
         if (std::filesystem::exists(details.bucket_path))
         {
-            for (const auto & entry : std::filesystem::directory_iterator(details.bucket_path)) {
+            auto it = std::filesystem::directory_iterator(details.bucket_path);
+            if (std::distance(std::filesystem::begin(it), std::filesystem::end(it)) > 0)
+            {
+                BOOST_LOG_TRIVIAL(error) << "Found File in Bucket";
                 ss << Response::CONFLICT << "\n";
                 ss << response.headers_str();
                 std::string response_buff(ss.str());
@@ -548,8 +613,8 @@ private:
 
     /**
      *  Bucket Details
-     * 
-    */
+     *
+     */
     void HEAD_BUCKET(Request &request, int client_socket, PathDetails &details)
     {
         Response response{};
@@ -567,17 +632,19 @@ private:
     }
 
 private:
-
-    void setAttributes(const std::filesystem::path &path, PathDetails& details, Response& response, Request& request) {
+    void setAttributes(const std::filesystem::path &path, PathDetails &details, Response &response, Request &request)
+    {
 
         std::string mime_type = response.mime_type(details.key);
-        if (setxattr(details.object_path.c_str(), PathDetails::XATT_MIME_TYPE, mime_type.c_str(), mime_type.size(), 0) < 0) {
-            perror(PathDetails::XATT_MIME_TYPE);    
+        if (setxattr(details.object_path.c_str(), PathDetails::XATT_MIME_TYPE, mime_type.c_str(), mime_type.size(), 0) < 0)
+        {
+            perror(PathDetails::XATT_MIME_TYPE);
             BOOST_LOG_TRIVIAL(error) << "FS Extended Attribute Not Set";
         }
 
-        if (setxattr(details.object_path.c_str(), PathDetails::XATT_KEY_NAME, details.key.c_str(), details.key.size(), 0) < 0) {
-            perror(PathDetails::XATT_KEY_NAME);    
+        if (setxattr(details.object_path.c_str(), PathDetails::XATT_KEY_NAME, details.key.c_str(), details.key.size(), 0) < 0)
+        {
+            perror(PathDetails::XATT_KEY_NAME);
             BOOST_LOG_TRIVIAL(error) << "FS Extended Attribute Not Set";
         }
 
@@ -590,28 +657,26 @@ private:
             std::string custom_name = std::string(PathDetails::XATT_PREFIX) + k;
             setxattr(details.object_path.c_str(), custom_name.c_str(), h.second.c_str(), h.second.size(), 0);
         }
-
     }
-
 
     /**
      *  Read the file system attrubutes back into the response Object
      *
      */
-    void getAttributes(const std::filesystem::path &path, Headers& headers)
+    void getAttributes(const std::filesystem::path &path, Headers &headers)
     {
         ssize_t sz = getxattr(path.c_str(), PathDetails::XATT_MIME_TYPE, NULL, 0);
-        if (sz > 0) {
+        if (sz > 0)
+        {
             char attr[sz + 1];
             sz = getxattr(path.c_str(), PathDetails::XATT_MIME_TYPE, attr, sz);
             attr[sz] = '\0';
             headers.emplace("Content-Type", std::string(attr));
         }
 
-       
-
         ssize_t attr_len = listxattr(path.c_str(), NULL, 0);
-        if (attr_len > 0) {
+        if (attr_len > 0)
+        {
             char attr_buf[attr_len + 1];
             attr_len = listxattr(path.c_str(), attr_buf, attr_len);
             attr_buf[attr_len] = '\0';
@@ -638,7 +703,7 @@ private:
     /**
      *  Strip the fixed url parts from the full url
      *  to leave the bucket and key
-     * 
+     *
      *  Return object containing details of the request.
      */
     PathDetails getParts(Request &request)
@@ -654,9 +719,9 @@ private:
     }
 
     /**
-     *  Return 400 BAD REQUEST 
-     * 
-    */
+     *  Return 400 BAD REQUEST
+     *
+     */
     void BadRequest(Request &request, int client_socket)
     {
         std::ostringstream ss;

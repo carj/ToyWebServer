@@ -42,6 +42,7 @@ public:
 
         // Some Default Headers
         m_headers.emplace("Date", str);
+        m_headers.emplace("Accept-Ranges",  "bytes");
         m_headers.emplace("Server", "C++ Test Server");
         m_headers.emplace("Connection", "keep-alive");
 
@@ -51,6 +52,7 @@ public:
     static constexpr std::string_view OK = "HTTP/1.1 200 OK";
     static constexpr std::string_view CONTINUE = "HTTP/1.1 100 Continue";
     static constexpr std::string_view CREATED = "HTTP/1.1 201 Created";
+    static constexpr std::string_view PARTIAL = "HTTP/1.1 206 Partial Content";
     static constexpr std::string_view NOT_FOUND = "HTTP/1.1 404 Not Found";
     static constexpr std::string_view NO_CONTENT = "HTTP/1.1 204 No Content";
     static constexpr std::string_view NOT_MODIFIED = "HTTP/1.1 304 Not Modified";
@@ -61,7 +63,7 @@ public:
     static constexpr std::string_view EXISTS = "HTTP/1.1 409 Conflict";
     static constexpr std::string_view SERVER_ERROR = "HTTP/1.1 500 Internal Server Error";
 
-    inline void setContentLength(int length)
+    inline void setContentLength(ssize_t length)
     {
         m_headers["Content-Length"] = std::to_string(length);
     }
