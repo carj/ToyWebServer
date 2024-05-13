@@ -72,7 +72,7 @@ struct PathDetails
 class S3HttpServer : public HttpServer
 {
 public:
-    S3HttpServer(unsigned short port, const char *storage_root, const char *path) : HttpServer(port, storage_root)
+    S3HttpServer(unsigned short port, const char *storage_root, const char *path) : HttpServer(port, storage_root), m_has_attributes(false)
     {
         using namespace boost;
 
@@ -83,6 +83,17 @@ public:
         // list of path parts which are fixed and not including the bucket/key
         for (auto seg : u.encoded_segments())
             m_path_parts.push_back(seg.decode());
+
+
+        // test for extended fs attributes
+        const char *name = "user.s3.chec_fs";
+        const char *value = "supported";
+        if (setxattr(storage_root, name,  value, strlen(value), 0) == 0) {
+            if (removexattr(storage_root, name) == 0) {
+                m_has_attributes = true;
+                BOOST_LOG_TRIVIAL(debug) << "Supports Exten FS Attribues";
+            }
+        }
     }
 
 protected:
@@ -451,12 +462,13 @@ private:
             std::string last_mod{std::ctime(&(struct_stat.st_mtim).tv_sec)};
             last_mod.pop_back();
 
-            mesg << "\t\t<Contents>\n";
-            mesg << "\t\t<Key>" << entry.path().filename().c_str() << "</Key>\n";
+
+            mesg << "\t<Contents>\n";
+            mesg << "\t\t<Key>" << attributes["x-amz-meta-Key"] << "</Key>\n";
             mesg << "\t\t<LastModified>" << last_mod << "</LastModified>\n";
-            mesg << "<ETag>" << struct_stat.st_ino << "-" << struct_stat.st_size << "-" << struct_stat.st_mtim.tv_sec << "</ETag>";
-            mesg << "<Size>" << struct_stat.st_size << "</Size>\n";
-            mesg << "\t\t</Contents>\n";
+            mesg << "\t\t<ETag>" << struct_stat.st_ino << "-" << struct_stat.st_size << "-" << struct_stat.st_mtim.tv_sec << "</ETag>\n";
+            mesg << "\t\t<Size>" << struct_stat.st_size << "</Size>\n";
+            mesg << "\t</Contents>\n";
         }
 
         mesg << "</ListBucketResult>\n";
@@ -732,4 +744,5 @@ private:
 
 private:
     std::vector<std::string> m_path_parts;
+    bool m_has_attributes;
 };
